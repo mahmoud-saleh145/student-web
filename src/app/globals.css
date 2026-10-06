@@ -1,0 +1,156 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-background: #f7f7f8;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f7f7f8;
+  --color-surface-raised: #ffffff;
+  --color-border: #e1e1e5;
+  --color-border-strong: #c8c8cf;
+  --color-foreground: #101014;
+  --color-muted: #6e6e7a;
+  --color-subtle: #9a9aa5;
+  /*
+   * The brand orange, sampled from the logo plate. It is a light colour, so
+   * anything written on it is dark ink — white on it measures 1.83:1.
+   */
+  --color-primary: #fbb150;
+  --color-primary-fg: #2a1206;
+  /*
+   * Text in the brand colour uses the logo orange itself, by decision: one
+   * shade across fills and text. On a white surface it measures 1.83:1, so it
+   * suits large or bold labels better than small body text.
+   */
+  --color-primary-ink: #fbb150;
+  --color-primary-soft: #fff5e8;
+  --color-primary-border: #fcc173;
+  --color-highlight: #fbb150;
+  --color-highlight-fg: #14131a;
+  --color-accent: #d52027;
+  --color-accent-fg: #ffffff;
+  --color-accent-soft: #ffedee;
+  --color-success: #15803d;
+  --color-success-soft: #eafaf0;
+  --color-warning: #b45309;
+  --color-warning-soft: #fff7ed;
+  --color-info: #1d4ed8;
+  --color-info-soft: #eef3ff;
+  --color-danger: #d52027;
+  --color-danger-soft: #ffedee;
+
+  /* Brand values as drawn, for marks and illustrations rather than text. */
+  --color-brand-orange: #fbb150;
+  --color-brand-red: #d52027;
+
+  --radius-card: 0.875rem;
+  --color-outline: #14131a;
+  /* Loaded by next/font in app/layout.tsx; the fallbacks matter only until it does. */
+  --font-sans: var(--font-inter), var(--font-cairo), ui-sans-serif, system-ui, sans-serif;
+  --font-arabic: var(--font-cairo), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+[data-theme='dark'] {
+  --color-background: #0b0b0d;
+  --color-surface: #14141a;
+  --color-surface-alt: #1a1a20;
+  --color-surface-raised: #22222a;
+  --color-border: #2e2e37;
+  --color-border-strong: #4a4a55;
+  --color-foreground: #f7f7f8;
+  --color-muted: #a8a8b2;
+  --color-subtle: #7a7a86;
+  --color-primary: #fbb150;
+  --color-primary-fg: #2a1206;
+  --color-primary-ink: #fbb150;
+  --color-primary-soft: #3a2408;
+  --color-primary-border: #6b4410;
+  --color-highlight: #fbb150;
+  --color-highlight-fg: #14131a;
+  --color-accent: #f44e54;
+  --color-accent-fg: #2b0709;
+  --color-accent-soft: #3a1416;
+  --color-success: #4ade80;
+  --color-success-soft: #10281a;
+  --color-warning: #fbbf24;
+  --color-warning-soft: #2a1f0a;
+  --color-info: #7dafff;
+  --color-info-soft: #101c33;
+  --color-danger: #f44e54;
+  --color-danger-soft: #3a1416;
+  --color-outline: #0a090c;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+html[dir='rtl'] body {
+  font-family: var(--font-arabic);
+  letter-spacing: 0 !important;
+}
+
+/* Web-style focus ring on every interactive element */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-primary-ink);
+  outline-offset: 2px;
+}
+
+/* Flip directional icons when the document is RTL */
+[dir='rtl'] .flip-rtl {
+  transform: scaleX(-1);
+}
+
+/* Clamp helpers */
+.clamp-1,
+.clamp-2,
+.clamp-3 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.clamp-1 {
+  -webkit-line-clamp: 1;
+}
+.clamp-2 {
+  -webkit-line-clamp: 2;
+}
+.clamp-3 {
+  -webkit-line-clamp: 3;
+}
+
+/* Range + video polish */
+input[type='range'] {
+  accent-color: var(--color-primary);
+}
+video::-webkit-media-text-track-display {
+  font-size: 1rem;
+}
+
+/* Slimmer scrollbars for data-dense areas */
+@supports (scrollbar-width: thin) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+}
+
+/*
+ * Protected content (video frames, rendered documents, attachments) is left
+ * out of print. This is a deterrent for the obvious "Print → Save as PDF"
+ * route, not a guarantee: no web page can stop a screenshot. The watermark is
+ * what makes a capture traceable.
+ */
+@media print {
+  [data-protected] {
+    visibility: hidden !important;
+  }
+}
