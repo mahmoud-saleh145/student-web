@@ -10,44 +10,22 @@ import { Input, Sheet } from '@/components/ui/forms';
 import { CheckIcon, ClockIcon, FileIcon, LayersIcon, LockIcon, PlayIcon, ShieldIcon, UserIcon } from '@/components/ui/icons';
 import { SupportLinks } from '@/components/support/SupportLinks';
 import { useCourse, useCourseParts, useEnroll, useJoinOptions, useRedeemCourseCode } from '@/features/api';
+import { buildCurriculumGroups, type CurriculumGroup } from '@/features/curriculum';
 import { ACCESS_BADGE, courseAccessFlags, joinLabel, joinSheetActions } from '@/lib/course-access';
 import { formatCompact, formatDate, formatDuration, formatMoney, formatNumber, localizedName } from '@/lib/format';
 import { useSession, useTranslation } from '@/lib/session-context';
 import { cn } from '@/lib/utils';
 import { toast } from '@/store/stores';
-import type { Language } from '@/i18n/dictionaries';
-import type { AccessState, CourseDetail, CourseJoinOptions, CoursePart, CourseSection, LessonSummary } from '@/types/domain';
+import type { AccessState, CourseDetail, CourseJoinOptions, LessonSummary } from '@/types/domain';
 
 type Tab = 'overview' | 'content' | 'materials';
 
-interface OutlineGroup {
-  key: string;
-  title: string;
-  owned: boolean;
-  sections: CourseSection[];
-}
-
-function buildGroups(
-  course: CourseDetail,
-  parts: CoursePart[] | undefined,
-  language: Language
-): OutlineGroup[] {
-  const source = parts ?? [];
-  const fallback: OutlineGroup[] = [{ key: 'all', title: '', owned: false, sections: course.sections }];
-  if (source.length === 0) return fallback;
-
-  const byTitle = new Map(course.sections.map((s) => [s.title, s]));
-  const groups: OutlineGroup[] = source.map((p) => ({
-    key: p.id,
-    title: localizedName({ name: p.title, nameAr: p.titleAr }, language),
-    owned: p.owned,
-    sections: p.sections
-      .map((ps) => byTitle.get(ps.title))
-      .filter((s): s is CourseSection => !!s),
-  }));
-  const matched = groups.reduce((n, g) => n + g.sections.length, 0);
-  return matched === 0 ? fallback : groups;
-}
+/**
+ * Grouping now lives in `@/features/curriculum` — the lesson page needs the
+ * identical grouping, and the two local copies had already drifted. It also
+ * matches sections by id rather than by title, which is what makes a course
+ * with two identically-titled sections render correctly.
+ */
 
 export default function CourseDetailPage() {
   const params = useParams<{ id: string }>();
@@ -105,7 +83,13 @@ export default function CourseDetailPage() {
     else toast.info(t('courses.empty.sectionsBody'));
   };
 
-  const groups = buildGroups(course, partsQuery.data?.hasParts ? partsQuery.data.parts : [], language);
+  const groups = buildCurriculumGroups(
+    course.sections,
+    partsQuery.data?.hasParts ? partsQuery.data.parts : [],
+    language
+  );
+  /** True when the course is actually divided into parts, not one synthetic group. */
+  const hasParts = groups.length > 1 || groups.some((g) => g.title !== '');
   const currentLessonId = course.progress?.lastLessonId ?? null;
 
   return (
@@ -220,36 +204,19 @@ export default function CourseDetailPage() {
                   <p className="py-6 text-center text-sm text-muted">{t('courses.empty.sectionsBody')}</p>
                 </Card>
               ) : (
-                <div className="flex flex-col gap-3">
-                  {course.sections.map((s) => (
-                    <details key={s.id} className="overflow-hidden rounded-xl border border-border bg-surface" open={!s.locked}>
-                      <summary className="flex cursor-pointer items-center gap-2.5 px-4 py-3 text-sm font-bold">
-                        {s.locked ? <LockIcon size={16} className="text-subtle" /> : <PlayIcon size={16} className="text-primary-ink" />}
-                        <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                        <span className="shrink-0 text-[13px] font-normal text-muted">{formatNumber(s.lessonCount, language)}</span>
-                      </summary>
-                      <div className="border-t border-border">
-                        {s.lessons.map((l) => (
-                          <button
-                            key={l.id}
-                            onClick={() => openLesson(l)}
-                            className="flex w-full cursor-pointer items-center gap-3 border-b border-border px-4 py-2.5 text-start text-sm transition-colors last:border-0 hover:bg-surface-alt"
-                          >
-                            <span className="w-4 shrink-0 text-center">
-                              {l.progress?.completed ? (
-                                <CheckIcon size={15} className="text-success" />
-                              ) : l.locked && !l.isPreview ? (
-                                <LockIcon size={14} className="text-subtle" />
-                              ) : (
-                                <PlayIcon size={13} className="text-primary-ink" />
-                              )}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate">{l.title}</span>
-                            {l.isPreview ? <Badge label={t('courses.preview')} tone="info" /> : null}
-                          </button>
-                        ))}
-                      </div>
-                    </details>
+                /* Course -> Part -> section -> lesson. The gap between parts is
+                   deliberately larger than the gap between sections inside one,
+                   so the grouping is legible before any text is read. */
+                <div className="flex flex-col gap-6">
+                  {groups.map((group, index) => (
+                    <PartBlock
+                      key={group.key}
+                      group={group}
+                      index={index}
+                      showHeader={hasParts}
+                      currentLessonId={currentLessonId}
+                      onOpenLesson={openLesson}
+                    />
                   ))}
                 </div>
               )
@@ -294,21 +261,35 @@ export default function CourseDetailPage() {
             {groups.length === 0 || groups.every((g) => g.sections.length === 0) ? (
               <p className="py-4 text-center text-[13px] text-muted">{t('courses.empty.sectionsBody')}</p>
             ) : (
-              <div className="-mx-1 flex flex-col">
+              /* The narrow mirror of the content tab. Each part is a bordered
+                 block with a numbered header, so the sidebar tells the same
+                 Course -> Part -> lesson story as the main column instead of
+                 running the parts together. */
+              <div className="flex flex-col gap-2.5">
                 {groups.map((g, gi) => (
-                  <div key={g.key} className={cn('px-1', gi > 0 && 'mt-3')}>
-                    <div className="mb-1.5 flex items-center justify-between gap-2">
-                      <span className="truncate text-[13px] font-bold uppercase tracking-wider text-muted">
-                        {g.title || t('web.curriculum')}
-                      </span>
-                      <span className="flex shrink-0 items-center gap-2">
-                        {g.owned ? <Badge label={t('library.owned')} tone="success" /> : null}
-                        <span className="text-[13px] font-semibold text-subtle">
-                          {g.sections.reduce((n, s) => n + s.lessonCount, 0)}
+                  <div
+                    key={g.key}
+                    className={cn(
+                      hasParts && 'overflow-hidden rounded-xl border border-border bg-surface-alt/40'
+                    )}
+                  >
+                    {hasParts ? (
+                      <div className="flex items-center gap-2 border-b border-border bg-surface px-2.5 py-2">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-primary text-[11px] font-bold text-primary-fg">
+                          {formatNumber(gi + 1, language)}
                         </span>
-                      </span>
-                    </div>
-                    <div className="flex flex-col">
+                        <span className="min-w-0 flex-1 truncate text-[13px] font-bold">
+                          {g.title || t('web.curriculum')}
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          {g.owned ? <Badge label={t('library.owned')} tone="success" /> : null}
+                          <span className="text-[13px] font-semibold text-subtle">
+                            {formatNumber(g.lessonCount, language)}
+                          </span>
+                        </span>
+                      </div>
+                    ) : null}
+                    <div className={cn('flex flex-col', hasParts && 'p-1')}>
                       {g.sections.map((s) => (
                         <div key={s.id} className="flex flex-col">
                           <div className="flex items-center gap-2 px-2 pb-1 pt-2 text-[13px] font-semibold text-foreground">
@@ -358,6 +339,122 @@ export default function CourseDetailPage() {
 
       <JoinSheet courseId={course.id} open={joinOpen} onClose={() => setJoinOpen(false)} />
     </AppShell>
+  );
+}
+
+/**
+ * One part of the curriculum, as a self-contained block.
+ *
+ * The complaint this answers is that Part 1, Part 2 and Part 3 read as one
+ * continuous list. Three things do the separating, and all three are needed:
+ *
+ *   * a header carrying the part NUMBER as a filled badge, so the eye can
+ *     count parts without reading titles;
+ *   * an outer card per part, so a part's sections are visibly inside it; and
+ *   * a larger gap between parts than between the sections within one — the
+ *     cheapest and most reliable grouping cue there is.
+ *
+ * `showHeader` is false for a course with no parts: inventing a "Part 1" for a
+ * course that was never divided would be worse than the flat list.
+ */
+function PartBlock({
+  group,
+  index,
+  showHeader,
+  currentLessonId,
+  onOpenLesson,
+}: {
+  group: CurriculumGroup;
+  index: number;
+  showHeader: boolean;
+  currentLessonId: string | null;
+  onOpenLesson: (lesson: LessonSummary) => void;
+}) {
+  const { t, language } = useTranslation();
+
+  return (
+    <section
+      className={cn(
+        showHeader && 'overflow-hidden rounded-2xl border border-border bg-surface-alt/40'
+      )}
+      aria-label={showHeader ? group.title || t('parts.partNumber', { index: index + 1 }) : undefined}
+    >
+      {showHeader ? (
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border bg-surface px-4 py-3">
+          {/* The number is the anchor. Rendered as a solid badge rather than
+              text so it survives a long Arabic title beside it. */}
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-[13px] font-bold text-primary-fg">
+            {formatNumber(index + 1, language)}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+              {t('parts.partNumber', { index: index + 1 })}
+            </p>
+            <h3 className="truncate text-sm font-bold">{group.title}</h3>
+          </div>
+          <span className="flex shrink-0 items-center gap-2">
+            {group.owned ? <Badge label={t('parts.owned')} tone="success" /> : null}
+            {!group.owned && group.locked ? <Badge label={t('parts.locked')} tone="warning" /> : null}
+            <span className="text-[13px] font-semibold text-muted">
+              {t('parts.lessonCount', { count: group.lessonCount })}
+            </span>
+          </span>
+        </header>
+      ) : null}
+
+      {group.sections.length === 0 ? (
+        <p className="px-4 py-5 text-center text-[13px] text-muted">{t('parts.emptyPart')}</p>
+      ) : (
+        /* Sections stack vertically inside the part, each its own card, so the
+           third level of the hierarchy is still visible inside the second. */
+        <div className={cn('flex flex-col gap-2.5', showHeader && 'p-3')}>
+          {group.sections.map((section) => (
+            <details
+              key={section.id}
+              className="overflow-hidden rounded-xl border border-border bg-surface"
+              open={!section.locked}
+            >
+              <summary className="flex cursor-pointer list-none items-center gap-2.5 px-4 py-3 text-sm font-bold">
+                {section.locked ? (
+                  <LockIcon size={16} className="shrink-0 text-subtle" />
+                ) : (
+                  <PlayIcon size={16} className="shrink-0 text-primary-ink" />
+                )}
+                <span className="min-w-0 flex-1 truncate">{section.title}</span>
+                <span className="shrink-0 text-[13px] font-normal text-muted">
+                  {formatNumber(section.lessonCount, language)}
+                </span>
+              </summary>
+              <div className="border-t border-border">
+                {section.lessons.map((lesson) => (
+                  <button
+                    key={lesson.id}
+                    onClick={() => onOpenLesson(lesson)}
+                    aria-current={lesson.id === currentLessonId ? 'page' : undefined}
+                    className={cn(
+                      'flex w-full cursor-pointer items-center gap-3 border-b border-border px-4 py-2.5 text-start text-sm transition-colors last:border-0 hover:bg-surface-alt',
+                      lesson.id === currentLessonId && 'bg-primary-soft font-semibold text-primary-ink'
+                    )}
+                  >
+                    <span className="w-4 shrink-0 text-center">
+                      {lesson.progress?.completed ? (
+                        <CheckIcon size={15} className="text-success" />
+                      ) : lesson.locked && !lesson.isPreview ? (
+                        <LockIcon size={14} className="text-subtle" />
+                      ) : (
+                        <PlayIcon size={13} className="text-primary-ink" />
+                      )}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{lesson.title}</span>
+                    {lesson.isPreview ? <Badge label={t('courses.preview')} tone="info" /> : null}
+                  </button>
+                ))}
+              </div>
+            </details>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

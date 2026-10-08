@@ -7,31 +7,18 @@ import { Badge, Button, Card, CardTitle } from '@/components/ui/core';
 import { AppShell, ErrorState, PageHeader } from '@/components/ui/feedback';
 import { CheckCircleIcon, CheckIcon, ChevronRightIcon, ClockIcon, FileIcon, LockIcon, PlayIcon, TrendingUpIcon } from '@/components/ui/icons';
 import { useCourse, useCourseParts, useLesson, useMarkLessonComplete } from '@/features/api';
-import { formatDuration, formatNumber, formatTimecode, localizedName } from '@/lib/format';
+import { buildCurriculumGroups } from '@/features/curriculum';
+import { formatDuration, formatNumber, formatTimecode } from '@/lib/format';
 import { useTranslation } from '@/lib/session-context';
 import { cn } from '@/lib/utils';
-import type { Language } from '@/i18n/dictionaries';
-import type { CoursePart, CourseSection, LessonSummary } from '@/types/domain';
+import type { LessonSummary } from '@/types/domain';
 
-interface OutlineGroup {
-  key: string;
-  title: string;
-  sections: CourseSection[];
-}
-
-function buildGroups(sections: CourseSection[], parts: CoursePart[], language: Language): OutlineGroup[] {
-  if (parts.length === 0) return [{ key: 'all', title: '', sections }];
-  const byTitle = new Map(sections.map((s) => [s.title, s]));
-  const groups: OutlineGroup[] = parts.map((p) => ({
-    key: p.id,
-    title: localizedName({ name: p.title, nameAr: p.titleAr }, language),
-    sections: p.sections
-      .map((ps) => byTitle.get(ps.title))
-      .filter((s): s is CourseSection => !!s),
-  }));
-  const matched = groups.reduce((n, g) => n + g.sections.length, 0);
-  return matched === 0 ? [{ key: 'all', title: '', sections }] : groups;
-}
+/**
+ * Grouping moved to `@/features/curriculum`, shared with the course page. The
+ * two local copies had to agree on what "Part 2" contains and were drifting;
+ * the shared one also matches sections by id rather than by title, so a course
+ * with two identically-titled sections no longer loses one.
+ */
 
 export default function LessonPage() {
   const params = useParams<{ id: string }>();
@@ -73,11 +60,12 @@ export default function LessonPage() {
   const unavailable = video?.status === 'FAILED' || video?.status === 'ARCHIVED';
   const resumable = !!progress && progress.positionSeconds > 5 && !progress.completed;
   const courseTitle = courseQuery.data?.title ?? '';
-  const groups = buildGroups(
+  const groups = buildCurriculumGroups(
     courseQuery.data?.sections ?? [],
     partsQuery.data?.hasParts ? partsQuery.data.parts : [],
     language
   );
+  const hasParts = groups.length > 1 || groups.some((g) => g.title !== '');
 
   const outlineRow = (l: LessonSummary) => {
     const locked = l.locked && !l.isPreview;
@@ -240,11 +228,30 @@ export default function LessonPage() {
             ) : (
               <div className="-mx-1 flex flex-col">
                 {groups.map((g, gi) => (
-                  <div key={g.key} className={cn('px-1', gi > 0 && 'mt-3')}>
-                    <div className="mb-1.5 truncate text-[13px] font-bold uppercase tracking-wider text-muted">
-                      {g.title || t('web.curriculum')}
-                    </div>
-                    <div className="flex flex-col">
+                  /* Same part treatment as the course page's sidebar, so the
+                     outline a student sees while watching matches the one they
+                     browsed. */
+                  <div
+                    key={g.key}
+                    className={cn(
+                      hasParts && 'overflow-hidden rounded-xl border border-border bg-surface-alt/40',
+                      gi > 0 && 'mt-2.5'
+                    )}
+                  >
+                    {hasParts ? (
+                      <div className="flex items-center gap-2 border-b border-border bg-surface px-2.5 py-2">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-primary text-[11px] font-bold text-primary-fg">
+                          {formatNumber(gi + 1, language)}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-[13px] font-bold">
+                          {g.title || t('web.curriculum')}
+                        </span>
+                        <span className="shrink-0 text-[13px] font-semibold text-subtle">
+                          {formatNumber(g.lessonCount, language)}
+                        </span>
+                      </div>
+                    ) : null}
+                    <div className={cn('flex flex-col', hasParts && 'p-1')}>
                       {g.sections.map((s) => (
                         <div key={s.id} className="flex flex-col">
                           <div className="flex items-center gap-2 px-2 pb-1 pt-2 text-[13px] font-semibold">
