@@ -12,6 +12,7 @@ import { FilterIcon } from '@/components/ui/icons';
 import { Toolbar } from '@/components/ui/table';
 import {
   useAcademicYears,
+  useProfile,
   useCourseList,
   useFaculties,
   useUniversities,
@@ -27,6 +28,7 @@ interface FilterControlsProps {
   universityOptions: { value: string; label: string }[];
   facultyOptions: { value: string; label: string }[];
   yearOptions: { value: string; label: string }[];
+  yearLabel: string;
   universityId: string;
   facultyId: string;
   academicYearId: string;
@@ -56,7 +58,7 @@ function FilterControls(props: FilterControlsProps) {
         disabled={!props.universityId}
       />
       <Select
-        label={props.t('courses.filterYear')}
+        label={props.yearLabel}
         value={props.academicYearId}
         onChange={(e) => props.onYear(e.target.value)}
         placeholder="—"
@@ -99,7 +101,8 @@ export default function CoursesPage() {
   const query = useCourseList(filters);
   const universities = useUniversities();
   const faculties = useFaculties(universityId);
-  const years = useAcademicYears();
+  const profile = useProfile();
+  const years = useAcademicYears(profile.data?.department?.id);
   const items = query.data?.items ?? [];
   const total = query.data?.total ?? 0;
   const activeFilterCount =
@@ -130,6 +133,7 @@ export default function CoursesPage() {
     universityId: universityId ?? '',
     facultyId: facultyId ?? '',
     academicYearId: academicYearId ?? '',
+    yearLabel: profile.data?.department?.studyType === 'PROGRAMS' ? t('auth.level') : t('courses.filterYear'),
     freeOnly,
     onUniversity: (value) => {
       setUniversityId(value || null);

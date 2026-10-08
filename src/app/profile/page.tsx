@@ -136,8 +136,9 @@ export default function ProfilePage() {
             <CardTitle>{t('profile.academicInfo')}</CardTitle>
             <KeyValue label={t('auth.university')}>{localizedName(profile.university, language)}</KeyValue>
             <KeyValue label={t('auth.faculty')}>{localizedName(profile.faculty, language)}</KeyValue>
-            <KeyValue label={t('auth.department')}>{localizedName(profile.department, language)}</KeyValue>
-            <KeyValue label={t('auth.academicYear')}>{localizedName(profile.academicYear, language)}</KeyValue>
+            <KeyValue label={t('auth.studyType')}>{profile.department?.studyType === 'PROGRAMS' ? t('auth.programs') : profile.department ? t('auth.general') : '—'}</KeyValue>
+            <KeyValue label={profile.department?.studyType === 'PROGRAMS' ? t('auth.program') : t('auth.department')}>{localizedName(profile.department, language)}</KeyValue>
+            <KeyValue label={profile.department?.studyType === 'PROGRAMS' ? t('auth.level') : t('auth.academicYear')}>{localizedName(profile.academicYear, language)}</KeyValue>
             <KeyValue label={t('auth.gender')}>{t(profile.gender === 'MALE' ? 'auth.male' : 'auth.female')}</KeyValue>
           </Card>
 

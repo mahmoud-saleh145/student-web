@@ -73,17 +73,19 @@ export default function RegisterPage() {
   });
   const academicForm = useForm({
     resolver: zodResolver(registerAcademicSchema),
-    defaultValues: { universityId: '', facultyId: '', departmentId: '', academicYearId: '', gender: '' as unknown as 'MALE' },
+    defaultValues: { studyType: undefined as unknown as 'GENERAL' | 'PROGRAMS', universityId: '', facultyId: '', departmentId: '', academicYearId: '', gender: '' as unknown as 'MALE' },
     mode: 'onChange',
   });
 
   const universityId = academicForm.watch('universityId');
   const facultyId = academicForm.watch('facultyId');
+  const studyType = academicForm.watch('studyType');
+  const departmentId = academicForm.watch('departmentId');
 
   const universities = useUniversities();
   const faculties = useFaculties(universityId || null);
-  const departments = useDepartments(facultyId || null);
-  const years = useAcademicYears();
+  const departments = useDepartments(studyType ? facultyId || null : null, studyType);
+  const years = useAcademicYears(departmentId || undefined);
 
   React.useEffect(() => {
     if (status === 'authenticated') router.replace('/home');
@@ -96,7 +98,16 @@ export default function RegisterPage() {
 
   React.useEffect(() => {
     academicForm.setValue('departmentId', '');
+    academicForm.setValue('studyType', undefined as unknown as 'GENERAL' | 'PROGRAMS');
+    academicForm.setValue('academicYearId', '');
   }, [facultyId, academicForm]);
+
+  React.useEffect(() => {
+    academicForm.setValue('departmentId', '');
+    academicForm.setValue('academicYearId', '');
+  }, [studyType, academicForm]);
+
+  React.useEffect(() => { academicForm.setValue('academicYearId', ''); }, [departmentId, academicForm]);
 
   const goNext = async () => {
     setFormError(null);
@@ -161,8 +172,9 @@ export default function RegisterPage() {
     // decides which courses the student sees afterwards.
     { label: t('auth.university'), value: localizedName(universities.data?.find((u) => u.id === academicForm.getValues().universityId), language) },
     { label: t('auth.faculty'), value: localizedName(faculties.data?.find((f) => f.id === academicForm.getValues().facultyId), language) },
-    { label: t('auth.department'), value: localizedName(departments.data?.find((d) => d.id === academicForm.getValues().departmentId), language) },
-    { label: t('auth.academicYear'), value: localizedName(years.data?.find((y) => y.id === academicForm.getValues().academicYearId), language) },
+    { label: t('auth.studyType'), value: studyType === 'PROGRAMS' ? t('auth.programs') : t('auth.general') },
+    { label: studyType === 'PROGRAMS' ? t('auth.program') : t('auth.department'), value: localizedName(departments.data?.find((d) => d.id === academicForm.getValues().departmentId), language) },
+    { label: studyType === 'PROGRAMS' ? t('auth.level') : t('auth.academicYear'), value: localizedName(years.data?.find((y) => y.id === academicForm.getValues().academicYearId), language) },
   ];
 
   return (
@@ -231,11 +243,14 @@ export default function RegisterPage() {
                     <Controller control={academicForm.control} name="facultyId" render={({ field }) => (
                       <Select label={t('auth.faculty')} value={field.value} onChange={(e) => field.onChange(e.target.value)} placeholder={t('auth.faculty')} disabled={!universityId} options={(faculties.data ?? []).map((f) => ({ value: f.id, label: f.nameAr || f.name }))} error={tr(academicForm.formState.errors.facultyId?.message)} />
                     )} />
+                    <Controller control={academicForm.control} name="studyType" render={({ field }) => (
+                      <Select label={t('auth.studyType')} value={field.value ?? ''} onChange={(event) => field.onChange(event.target.value)} placeholder={t('auth.studyType')} disabled={!facultyId} required options={[{ value: 'GENERAL', label: t('auth.general') }, { value: 'PROGRAMS', label: t('auth.programs') }]} error={tr(academicForm.formState.errors.studyType?.message)} />
+                    )} />
                     <Controller control={academicForm.control} name="departmentId" render={({ field }) => (
-                      <Select label={t('auth.department')} value={field.value} onChange={(e) => field.onChange(e.target.value)} placeholder={t('auth.department')} disabled={!facultyId} options={(departments.data ?? []).map((d) => ({ value: d.id, label: d.nameAr || d.name }))} error={tr(academicForm.formState.errors.departmentId?.message)} />
+                      <Select label={studyType === 'PROGRAMS' ? t('auth.program') : t('auth.department')} value={field.value} onChange={(e) => field.onChange(e.target.value)} placeholder={studyType === 'PROGRAMS' ? t('auth.program') : t('auth.department')} disabled={!facultyId || !studyType} options={(departments.data ?? []).map((d) => ({ value: d.id, label: d.nameAr || d.name }))} error={tr(academicForm.formState.errors.departmentId?.message)} />
                     )} />
                     <Controller control={academicForm.control} name="academicYearId" render={({ field }) => (
-                      <Select label={t('auth.academicYear')} value={field.value} onChange={(e) => field.onChange(e.target.value)} placeholder={t('auth.academicYear')} options={(years.data ?? []).map((y) => ({ value: y.id, label: y.nameAr || y.name }))} error={tr(academicForm.formState.errors.academicYearId?.message)} />
+                      <Select label={studyType === 'PROGRAMS' ? t('auth.level') : t('auth.academicYear')} value={field.value} onChange={(e) => field.onChange(e.target.value)} placeholder={studyType === 'PROGRAMS' ? t('auth.level') : t('auth.academicYear')} disabled={!departmentId} options={(years.data ?? []).map((y) => ({ value: y.id, label: y.nameAr || y.name }))} error={tr(academicForm.formState.errors.academicYearId?.message)} />
                     )} />
                     <Controller control={academicForm.control} name="gender" render={({ field }) => (
                       <div className="sm:col-span-2">

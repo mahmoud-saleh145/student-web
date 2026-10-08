@@ -54,6 +54,7 @@ export const registerAccountSchema = z
   });
 
 export const registerAcademicSchema = z.object({
+  studyType: z.enum(['GENERAL', 'PROGRAMS'], { message: 'validation.selectOption' }),
   universityId: z.string().min(1, 'validation.selectOption'),
   facultyId: z.string().min(1, 'validation.selectOption'),
   departmentId: z.string().min(1, 'validation.selectOption'),
