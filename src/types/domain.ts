@@ -16,7 +16,10 @@ export interface Faculty {
   nameAr: string;
 }
 
+export type StudyType = 'GENERAL' | 'PROGRAMS';
+
 export interface Department {
+  studyType?: StudyType;
   id: string;
   facultyId: string;
   name: string;

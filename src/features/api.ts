@@ -67,8 +67,8 @@ export const authApi = {
 export const catalogApi = {
   universities: () => api.get<University[]>('catalog/universities'),
   faculties: (universityId: string) => api.get<Faculty[]>(`catalog/universities/${universityId}/faculties`),
-  departments: (facultyId: string) => api.get<Department[]>(`catalog/faculties/${facultyId}/departments`),
-  academicYears: () => api.get<AcademicYear[]>('catalog/academic-years'),
+  departments: (facultyId: string, studyType?: 'GENERAL' | 'PROGRAMS') => api.get<Department[]>(`catalog/faculties/${facultyId}/departments${studyType ? `?studyType=${studyType}` : ''}`),
+  academicYears: (departmentId?: string) => api.get<AcademicYear[]>(`catalog/academic-years${departmentId ? `?departmentId=${departmentId}` : ''}`),
 };
 
 export function useUniversities() {
@@ -82,16 +82,16 @@ export function useFaculties(universityId: string | null) {
     staleTime: 30 * 60_000,
   });
 }
-export function useDepartments(facultyId: string | null) {
+export function useDepartments(facultyId: string | null, studyType?: 'GENERAL' | 'PROGRAMS') {
   return useQuery({
-    queryKey: qk.catalog.departments(facultyId ?? 'none'),
-    queryFn: () => catalogApi.departments(facultyId!),
+    queryKey: [...qk.catalog.departments(facultyId ?? 'none'), studyType],
+    queryFn: () => catalogApi.departments(facultyId!, studyType),
     enabled: !!facultyId,
     staleTime: 30 * 60_000,
   });
 }
-export function useAcademicYears() {
-  return useQuery({ queryKey: qk.catalog.academicYears(), queryFn: catalogApi.academicYears, staleTime: 60 * 60_000 });
+export function useAcademicYears(departmentId?: string) {
+  return useQuery({ queryKey: [...qk.catalog.academicYears(), departmentId], queryFn: () => catalogApi.academicYears(departmentId), staleTime: 60 * 60_000 });
 }
 
 export function useProfile() {
