@@ -16,6 +16,10 @@ import * as shaka from 'shaka-player';
 import 'shaka-player/dist/controls.css';
 
 import { Watermark } from '@/components/protection/Watermark';
+import {
+  buildFairPlayLicenseRequest,
+  parseFairPlayLicenseResponse,
+} from '@/lib/fairplay';
 
 /**
  * DRM video playback for Gumlet-backed lessons.
@@ -125,14 +129,16 @@ export default function DrmVideo({
 
       const widevine = 'com.widevine.alpha';
       const fairplay = 'com.apple.fps';
+      // Legacy Apple Media Keys. Which of the two a manifest yields depends on
+      // its signalling, so both get a licence server and the certificate.
+      const fairplayLegacy = 'com.apple.fps.1_0';
       const isFairPlay = drm.scheme === 'fairplay';
 
       player.configure({
         drm: {
-          servers: {
-            [widevine]: isFairPlay ? undefined : drm.licenseUrl,
-            [fairplay]: isFairPlay ? drm.licenseUrl : undefined,
-          },
+          servers: isFairPlay
+            ? { [fairplay]: drm.licenseUrl, [fairplayLegacy]: drm.licenseUrl }
+            : { [widevine]: drm.licenseUrl },
           advanced: {
             // Requested robustness only. No SW fallback: a software-only CDM
             // fails here rather than silently playing an unprotected stream.
@@ -140,27 +146,44 @@ export default function DrmVideo({
               videoRobustness: ['HW_SECURE_ALL'],
               audioRobustness: ['HW_SECURE_ALL'],
             },
+            // The certificate goes in the nested object. `configure()` takes a
+            // '.'-separated path as its first argument, so passing
+            // 'drm.advanced.com.apple.fps.serverCertificateUri' would split the
+            // key-system name at its dots and never reach the key system.
+            ...(isFairPlay && drm.certificateUrl
+              ? {
+                  [fairplay]: { serverCertificateUri: drm.certificateUrl },
+                  [fairplayLegacy]: { serverCertificateUri: drm.certificateUrl },
+                }
+              : {}),
           },
         },
         abr: { enabled: true },
       });
 
-      // FairPlay needs Gumlet's certificate plus the standard request/response
-      // transforms Shaka ships for handling the Safari protocol.
-      if (isFairPlay && drm.certificateUrl) {
-        player.configure(`drm.advanced.${fairplay}.serverCertificateUri`, drm.certificateUrl);
+      if (isFairPlay) {
+        // Gumlet's licence server speaks JSON: it wants {"spc": "<base64>"} and
+        // answers {"ckc": "<base64>"}. Shaka's generic FairPlay contract (and
+        // shaka.util.FairPlayUtils.commonFairPlayResponse, which implements it)
+        // expects a form-encoded `spc=` body and an optional <ckc> XML wrapper,
+        // so that helper would not decode Gumlet's response. See lib/fairplay.ts
+        // for the full rationale.
         const ne = player.getNetworkingEngine();
-        // Gumlet documents its FairPlay transforms under `shaka.drm.FairPlay`.
-        // That namespace is not in the 4.11 public typings, so this stays a
-        // guarded cast: if it is absent the filters are skipped and only the
-        // certificate configured above is applied. Behaviour is unchanged.
-        const fp = shaka as unknown as {
-          drm?: { FairPlay?: Record<string, (...a: never[]) => unknown> };
-        };
-        if (ne && fp.drm?.FairPlay) {
-          ne.registerRequestFilter(fp.drm.FairPlay.gumletFairPlayRequest as unknown as shaka.extern.RequestFilter);
-          ne.registerResponseFilter(fp.drm.FairPlay.commonFairPlayResponse as unknown as shaka.extern.ResponseFilter);
+        if (!ne) {
+          // Without these filters the licence exchange cannot work, so fail
+          // loudly rather than degrading to a request Gumlet will reject.
+          setFatal('Protected playback is unavailable: the player network stack failed to initialise.');
+          return;
         }
+        ne.registerRequestFilter((type, request) => {
+          if (type !== shaka.net.NetworkingEngine.RequestType.LICENSE) return;
+          request.headers['Content-Type'] = 'application/json';
+          request.body = buildFairPlayLicenseRequest(request.body);
+        });
+        ne.registerResponseFilter((type, response) => {
+          if (type !== shaka.net.NetworkingEngine.RequestType.LICENSE) return;
+          response.data = parseFairPlayLicenseResponse(response.data);
+        });
       }
 
       // --- lifecycle --------------------------------------------------------

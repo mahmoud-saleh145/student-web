@@ -11,6 +11,7 @@ import { ErrorState, FocusShell } from '@/components/ui/feedback';
 import { useLessonByVideo } from '@/features/api';
 import { api, ApiError } from '@/lib/api-client';
 import { formatTimecode } from '@/lib/format';
+import { detectPlaybackPlatform } from '@/lib/playback-platform';
 import { qk } from '@/lib/query-keys';
 import { useTranslation } from '@/lib/session-context';
 import { usePlayerStore } from '@/store/stores';
@@ -162,7 +163,12 @@ function ProtectedPlayer({
     setError(null);
     try {
       const [tk, al] = await Promise.all([
-        api.post<PlaybackTicket>(`playback/videos/${videoId}/ticket`, { platform: 'web' }),
+        api.post<PlaybackTicket>(`playback/videos/${videoId}/ticket`, {
+          // Must reflect the real device: the backend switches to FairPlay only
+          // for `ios`. Hardcoding 'web' handed Safari a Widevine licence URL,
+          // and iOS implements FairPlay exclusively.
+          platform: detectPlaybackPlatform(),
+        }),
         api.get<{ used: number; limit: number; remaining: number }>(`playback/videos/${videoId}/allowance`).catch(() => null),
       ]);
       ticketRef.current = tk;

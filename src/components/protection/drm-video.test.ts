@@ -57,6 +57,42 @@ describe('DrmVideo Shaka wiring', () => {
     assert.doesNotMatch(DrmVideo, /'SW_SECURE_CRYPTO'/);
   });
 
+  it('never references the absent shaka.drm namespace or gumlet helper', () => {
+    // Shaka 4.11.7 exports no `drm` namespace and no `gumletFairPlayRequest`,
+    // so both of these silently disabled the FairPlay filters.
+    assert.doesNotMatch(code, /shaka\.drm/);
+    assert.doesNotMatch(code, /gumletFairPlayRequest/);
+    assert.doesNotMatch(code, /commonFairPlayResponse/);
+  });
+
+  it('registers the FairPlay filters through the networking engine', () => {
+    assert.match(code, /registerRequestFilter/);
+    assert.match(code, /registerResponseFilter/);
+    // The certificate must be configured through the nested `advanced` object,
+    // not a '.'-separated configure() path, which splits the key system name.
+    assert.doesNotMatch(code, /configure\(`drm\.advanced\./);
+    assert.match(code, /serverCertificateUri/);
+  });
+
+  it('does not override Shaka default initDataTransform', () => {
+    // Shaka 4.11.7's DEFAULT initDataTransform already handles FairPlay `skd`
+    // init data: when the Apple MediaKeys polyfill is present and initDataType
+    // is 'skd', it derives the content ID with FairPlayUtils.defaultGetContentId
+    // and rebuilds the init blob with the server certificate. That was verified
+    // by executing Shaka 4.11.7 against the production asset's real skd data.
+    // Supplying our own would replace a verified behaviour with a guess.
+    assert.doesNotMatch(code, /initDataTransform/);
+    assert.doesNotMatch(code, /defaultGetContentId/);
+  });
+
+  it('configures both FairPlay key-system names', () => {
+    // Safari negotiates com.apple.fps (Modern EME) or com.apple.fps.1_0
+    // (legacy Apple Media Keys) depending on the device. Which one applies is
+    // not knowable ahead of a real device, so both carry a licence server.
+    assert.match(code, /com\.apple\.fps/);
+    assert.match(code, /com\.apple\.fps\.1_0/);
+  });
+
   it('still refuses to play without a licence or a manifest', () => {
     assert.match(DrmVideo, /if \(drm\.scheme === 'none' \|\| !drm\.licenseUrl\)/);
     assert.match(DrmVideo, /if \(!manifestUrl\)/);
