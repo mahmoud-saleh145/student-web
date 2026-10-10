@@ -3,7 +3,16 @@
 import * as React from 'react';
 // Bundles shaka-player into this route instead of fetching it from a CDN at
 // runtime, so a CDN outage cannot take protected playback down.
-import 'shaka-player';
+//
+// The namespace import is REQUIRED, and a bare side-effect import is not enough.
+// shaka-player's UMD wrapper only assigns `window.shaka` on its third branch --
+// the one taken when there is no module system. Under a bundler `exports` is
+// always defined, so the wrapper populates the module's exports and leaves the
+// global permanently undefined. Reading `window.shaka` here therefore always
+// yielded `undefined`, and this component bailed out before ever constructing a
+// player or requesting the manifest. See src/types/shaka-player.d.ts, which
+// declares the module boundary so this import resolves at all.
+import * as shaka from 'shaka-player';
 import 'shaka-player/dist/controls.css';
 
 import { Watermark } from '@/components/protection/Watermark';
@@ -33,47 +42,6 @@ import { Watermark } from '@/components/protection/Watermark';
  *     that the negotiated Widevine security level is L1, and this component
  *     makes no such claim. The level is not observable from EME.
  */
-
-/**
- * Minimal view of the parts of Shaka we use. shaka-player ships a global
- * declaration rather than a module, so we describe the shape locally instead of
- * importing a type that does not exist.
- */
-type ShakaLike = {
-  polyfill: { installAll: () => void };
-  Player: {
-    new (): ShakaPlayer;
-    isBrowserSupported: () => boolean;
-    version: string;
-  };
-  util: {
-    Error: { Code: Record<string, number>; Category: Record<string, number> };
-  };
-};
-
-type ShakaPlayer = {
-  attach: (el: HTMLMediaElement) => Promise<void>;
-  detach: () => Promise<void>;
-  destroy: () => Promise<void>;
-  configure: (path: string | Record<string, unknown>, value?: unknown) => void;
-  getConfiguration: () => { drm?: unknown };
-  getNetworkingEngine: () => {
-    registerRequestFilter: (f: unknown) => void;
-    registerResponseFilter: (f: unknown) => void;
-  };
-  load: (manifestUri: string) => Promise<void>;
-  unload: () => Promise<void>;
-  getMediaElement: () => HTMLMediaElement | null;
-  addTextTrackAsync: (
-    uri: string,
-    language: string,
-    kind: string,
-    label: string,
-    mime?: string,
-  ) => Promise<unknown>;
-  addEventListener: (type: string, listener: (event: unknown) => void) => void;
-  removeEventListener: (type: string, listener: (event: unknown) => void) => void;
-};
 
 /** What the backend ticket hands the player. */
 export type DrmTicket = {
@@ -113,7 +81,7 @@ export default function DrmVideo({
   onEnded,
 }: Props) {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
-  const playerRef = React.useRef<{ destroy: () => Promise<void> } | null>(null);
+  const playerRef = React.useRef<shaka.Player | null>(null);
   const [fatal, setFatal] = React.useState<string | null>(null);
 
   // Keep the latest callbacks reachable without making them effect dependencies,
@@ -138,11 +106,10 @@ export default function DrmVideo({
         return;
       }
 
-      const shaka = (window as unknown as { shaka: ShakaLike }).shaka;
-      if (!shaka) {
-        setFatal('The secure video player failed to initialise. Please reload the lesson.');
-        return;
-      }
+      // Shaka is imported as a module (see the import at the top of this file),
+      // so it is available here in every bundler context. The previous
+      // `window.shaka` lookup was always undefined and short-circuited this
+      // effect before a player or manifest request was ever made.
       if (disposed || !videoRef.current) return;
 
       shaka.polyfill.installAll();
@@ -183,12 +150,16 @@ export default function DrmVideo({
       if (isFairPlay && drm.certificateUrl) {
         player.configure(`drm.advanced.${fairplay}.serverCertificateUri`, drm.certificateUrl);
         const ne = player.getNetworkingEngine();
+        // Gumlet documents its FairPlay transforms under `shaka.drm.FairPlay`.
+        // That namespace is not in the 4.11 public typings, so this stays a
+        // guarded cast: if it is absent the filters are skipped and only the
+        // certificate configured above is applied. Behaviour is unchanged.
         const fp = shaka as unknown as {
-          drm: { FairPlay: Record<string, (...a: never[]) => unknown> } | undefined;
+          drm?: { FairPlay?: Record<string, (...a: never[]) => unknown> };
         };
-        if (fp.drm?.FairPlay) {
-          ne.registerRequestFilter(fp.drm.FairPlay.gumletFairPlayRequest as never);
-          ne.registerResponseFilter(fp.drm.FairPlay.commonFairPlayResponse as never);
+        if (ne && fp.drm?.FairPlay) {
+          ne.registerRequestFilter(fp.drm.FairPlay.gumletFairPlayRequest as unknown as shaka.extern.RequestFilter);
+          ne.registerResponseFilter(fp.drm.FairPlay.commonFairPlayResponse as unknown as shaka.extern.ResponseFilter);
         }
       }
 

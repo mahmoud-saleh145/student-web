@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, it } from 'node:test';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const read = (p: string) => readFileSync(resolve(here, p), 'utf8');
+
+const DrmVideo = read('./DrmVideo.tsx');
+const shakaTypes = read('../../types/shaka-player.d.ts');
+
+/** Strips comments so assertions target code rather than explanatory prose. */
+const stripComments = (src: string) =>
+  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+
+const code = stripComments(DrmVideo);
+
+/**
+ * Regression guard for the Shaka module/global mismatch.
+ *
+ * shaka-player's UMD wrapper assigns `window.shaka` only on its third branch --
+ * the one reached when no module system is present. Under Next.js/webpack
+ * `exports` is always in scope, so the first branch wins, the module's exports
+ * are populated, and `window.shaka` stays permanently undefined. The component
+ * used to read that global and bail out at the "failed to initialise" guard
+ * before it ever built a player or requested the manifest, so no DRM playback
+ * was possible on any student device.
+ *
+ * These assertions are static because the failure is a wiring mismatch in the
+ * module graph; nothing observable changes at runtime in this repo's plain
+ * `node --test` environment.
+ */
+describe('DrmVideo Shaka wiring', () => {
+  it('imports shaka-player as a namespace, not a discarded side-effect import', () => {
+    assert.match(DrmVideo, /import \* as shaka from 'shaka-player';/);
+    assert.doesNotMatch(DrmVideo, /^import 'shaka-player';$/m);
+  });
+
+  it('never reads the shaka global', () => {
+    assert.doesNotMatch(code, /window\.shaka/);
+    assert.doesNotMatch(code, /globalThis\.shaka/);
+    assert.doesNotMatch(code, /ShakaLike/);
+  });
+
+  it('declares the module boundary shaka-player omits from its own typings', () => {
+    // Without this declaration `import * as shaka from 'shaka-player'` is TS2306.
+    assert.match(shakaTypes, /declare module 'shaka-player'/);
+    assert.match(shakaTypes, /export = shaka;/);
+  });
+
+  it('keeps the DRM settings intact', () => {
+    // Requested robustness must not be weakened to make playback "work".
+    assert.match(DrmVideo, /videoRobustness: \['HW_SECURE_ALL'\]/);
+    assert.match(DrmVideo, /audioRobustness: \['HW_SECURE_ALL'\]/);
+    // No software-only fallback may be reintroduced.
+    assert.doesNotMatch(DrmVideo, /'SW_SECURE_CRYPTO'/);
+  });
+
+  it('still refuses to play without a licence or a manifest', () => {
+    assert.match(DrmVideo, /if \(drm\.scheme === 'none' \|\| !drm\.licenseUrl\)/);
+    assert.match(DrmVideo, /if \(!manifestUrl\)/);
+  });
+
+  it('destroys the player on cleanup', () => {
+    assert.match(DrmVideo, /playerRef\.current\.destroy\(\)/);
+  });
+});
