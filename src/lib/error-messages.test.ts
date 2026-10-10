@@ -36,4 +36,16 @@ describe('endsSession', () => {
     assert.equal(endsSession({ code: 'DEVICE_NOT_AUTHORIZED', status: 403 }), false);
     assert.equal(endsSession({ code: 'FORBIDDEN', status: 403 }), false);
   });
+
+  it('keeps the session when the proxy could not reach the backend to refresh', () => {
+    // Regression. The proxy used to relay the upstream 401 when a refresh
+    // failed for an unrelated reason (5xx, 429, timeout), and `endsSession`
+    // treats every 401 as fatal — so one unreachable backend cleared the
+    // cookies and threw the student back to sign-in while their session was
+    // still perfectly valid. The proxy now answers 503, which must not end it.
+    assert.equal(
+      endsSession({ code: 'SESSION_REFRESH_UNAVAILABLE', status: 503 }),
+      false
+    );
+  });
 });

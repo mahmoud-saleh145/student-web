@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import * as React from 'react';
 
 import { Watermark } from '@/components/protection/Watermark';
+import DrmVideo from '@/components/protection/DrmVideo';
 import { ErrorState, FocusShell } from '@/components/ui/feedback';
 import { useLessonByVideo } from '@/features/api';
 import { api, ApiError } from '@/lib/api-client';
@@ -181,6 +182,14 @@ function ProtectedPlayer({
   React.useEffect(() => {
     const video = videoRef.current;
     if (!video || !ticket) return;
+
+    // --- DRM (Gumlet) path ------------------------------------------------
+    // When the ticket is DRM-backed, `isDrmPlayback` renders <DrmVideo> instead
+    // of this <video> element, so videoRef.current is null and this effect
+    // returns here. hls.js cannot request a Widevine/FairPlay licence, so there
+    // is deliberately no fallback into the branch below.
+    if (isDrmPlayback) return;
+    // --- legacy R2 / AES-128 HLS path -------------------------------------
     const url = ticket.manifestUrl;
     let hls: Hls | null = null;
     if (url.includes('.m3u8') && Hls.isSupported()) {
@@ -267,6 +276,11 @@ function ProtectedPlayer({
     };
   }, []);
 
+  // A ticket is DRM when the backend says so and it points at a DASH manifest.
+  // hls.js cannot request a licence, so this must be decided before render.
+  const isDrmPlayback =
+    Boolean(ticket) && ticket!.drm.scheme !== 'none' && Boolean(ticket!.drm.licenseUrl) && /\.mpd(\?|$)/i.test(ticket!.manifestUrl);
+
   if (loading) {
     return (
       <FocusShell title={title}>
@@ -306,52 +320,74 @@ function ProtectedPlayer({
           onDoubleClick={toggleFullscreen}
           className="relative mx-auto w-full max-w-5xl [&:fullscreen]:flex [&:fullscreen]:max-w-none [&:fullscreen]:items-center [&:fullscreen]:bg-black"
         >
-          <video
-            ref={videoRef}
-            controls
-            playsInline
-            // The browser's own menu offers "Save video as…" and "Picture in
-            // picture" on a paid lesson. Neither is ours to give away: the
-            // first hands over the stream, the second floats it outside the
-            // page where the watermark no longer covers it.
-            // Native fullscreen would take the <video> element alone to full
-            // screen and leave the watermark behind on the page. Fullscreen is
-            // offered on the frame instead (button / double-click), so the
-            // watermark is always over the picture, as it is on the phone.
-            controlsList="nodownload noplaybackrate noremoteplayback nofullscreen"
-            disablePictureInPicture
-            disableRemotePlayback
-            onContextMenu={(e) => e.preventDefault()}
-            className="aspect-video w-full select-none rounded-lg bg-black"
-            onPlay={handlePlay}
-            onPause={handlePause}
-            onSeeking={handleSeeking}
-            onSeeked={handleSeeked}
-            onTimeUpdate={handleTimeUpdate}
-            onEnded={() => {
-              const video = videoRef.current;
-              if (video) {
-                const positionSeconds = Math.floor(video.currentTime);
+          {isDrmPlayback ? (
+            <DrmVideo
+              manifestUrl={ticket.manifestUrl}
+              drm={{
+                licenseUrl: ticket.drm.licenseUrl,
+                certificateUrl: ticket.drm.certificateUrl,
+                scheme: ticket.drm.scheme,
+              }}
+              captions={ticket.captions}
+              captionsEnabled={captionsEnabled}
+              watermark={ticket.watermark}
+              onEnded={() => {
                 const watchedDeltaSeconds = Math.min(60, Math.round(watchedAccumulatorRef.current));
                 watchedAccumulatorRef.current = 0;
                 if (watchedDeltaSeconds > 0) {
-                  void api.post(`progress`, { lessonId, positionSeconds, watchedSeconds: watchedDeltaSeconds }).catch(() => {});
+                  void api.post('progress', { lessonId, positionSeconds: 0, watchedSeconds: watchedDeltaSeconds }).catch(() => {});
                 }
-              }
-              onEnded();
-            }}
-            crossOrigin="anonymous"
-          >
-            {captionsEnabled
-              ? ticket.captions.map((c) => <track key={c.language} kind="subtitles" srcLang={c.language} label={c.label} src={c.url} default={c.isDefault} />)
-              : null}
-          </video>
-          <Watermark
-            primary={ticket.watermark.primary}
-            secondary={ticket.watermark.secondary}
-            opacity={ticket.watermark.opacity}
-            intervalMs={Math.max(5, ticket.watermark.moveIntervalSeconds || 12) * 1000}
-          />
+                onEnded();
+              }}
+              onError={() => {
+                // Fatal for this lesson by design: we never fall back to an
+                // unprotected stream. The reason is rendered inside the player.
+              }}
+            />
+          ) : (
+            <>
+              <video
+                ref={videoRef}
+                controls
+                playsInline
+                controlsList="nodownload noplaybackrate noremoteplayback nofullscreen"
+                disablePictureInPicture
+                disableRemotePlayback
+                onContextMenu={(e) => e.preventDefault()}
+                className="aspect-video w-full select-none rounded-lg bg-black"
+                onPlay={handlePlay}
+                onPause={handlePause}
+                onSeeking={handleSeeking}
+                onSeeked={handleSeeked}
+                onTimeUpdate={handleTimeUpdate}
+                onEnded={() => {
+                  const video = videoRef.current;
+                  if (video) {
+                    const positionSeconds = Math.floor(video.currentTime);
+                    const watchedDeltaSeconds = Math.min(60, Math.round(watchedAccumulatorRef.current));
+                    watchedAccumulatorRef.current = 0;
+                    if (watchedDeltaSeconds > 0) {
+                      void api.post('progress', { lessonId, positionSeconds, watchedSeconds: watchedDeltaSeconds }).catch(() => {});
+                    }
+                  }
+                  onEnded();
+                }}
+                crossOrigin="anonymous"
+              >
+                {captionsEnabled
+                  ? ticket.captions.map((c) => (
+                      <track key={c.language} kind="subtitles" srcLang={c.language} label={c.label} src={c.url} default={c.isDefault} />
+                    ))
+                  : null}
+              </video>
+              <Watermark
+                primary={ticket.watermark.primary}
+                secondary={ticket.watermark.secondary}
+                opacity={ticket.watermark.opacity}
+                intervalMs={Math.max(5, ticket.watermark.moveIntervalSeconds || 12) * 1000}
+              />
+            </>
+          )}
           <button
             type="button"
             onClick={toggleFullscreen}

@@ -1,6 +1,6 @@
-export type UserRole = 'MASTER' | 'ADMIN' | 'TEACHER' | 'STUDENT';
-export type Gender = 'MALE' | 'FEMALE';
-export type AccountStatus = 'ACTIVE' | 'PENDING' | 'SUSPENDED' | 'DISABLED';
+export type UserRole = "MASTER" | "ADMIN" | "TEACHER" | "STUDENT";
+export type Gender = "MALE" | "FEMALE";
+export type AccountStatus = "ACTIVE" | "PENDING" | "SUSPENDED" | "DISABLED";
 
 export interface University {
   id: string;
@@ -16,7 +16,14 @@ export interface Faculty {
   nameAr: string;
 }
 
-export type StudyType = 'GENERAL' | 'PROGRAMS';
+/**
+ * Whether a department is a general department or a programme branch.
+ *
+ * Administrative metadata. It is deliberately NOT the academic system: whether a
+ * college counts in years or in levels is its own configuration, resolved
+ * server-side. Nothing in the student app reads this to decide a label.
+ */
+export type StudyType = "GENERAL" | "PROGRAMS";
 
 export interface Department {
   studyType?: StudyType;
@@ -26,11 +33,22 @@ export interface Department {
   nameAr: string;
 }
 
+/** The academic progression system: نظام الفرق or نظام الليفلز. */
+export type AcademicStructureKind = "YEAR" | "LEVEL";
+
 export interface AcademicYear {
   id: string;
   order: number;
   name: string;
   nameAr: string;
+  /**
+   * Which vocabulary this rung is expressed in. Present on the public list and
+   * on a profile's rung; the label a screen shows must come from here rather
+   * than from anything the student selected.
+   */
+  kind?: AcademicStructureKind;
+  /** Reported on a profile rung so the label follows the ladder it belongs to. */
+  structure?: { kind: AcademicStructureKind } | null;
 }
 
 export interface User {
@@ -56,17 +74,17 @@ export interface Teacher {
   bio?: string | null;
 }
 
-export type CourseStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED' | 'HIDDEN';
-export type EnrollmentMethod = 'FREE' | 'PAYMENT' | 'CODE' | 'ADMIN_APPROVAL';
+export type CourseStatus = "DRAFT" | "PUBLISHED" | "ARCHIVED" | "HIDDEN";
+export type EnrollmentMethod = "FREE" | "PAYMENT" | "CODE" | "ADMIN_APPROVAL";
 
 export type AccessState =
-  | 'NOT_ENROLLED'
-  | 'PENDING_APPROVAL'
-  | 'PENDING_PAYMENT'
-  | 'ACTIVE'
-  | 'EXPIRED'
-  | 'REVOKED'
-  | 'ARCHIVED';
+  | "NOT_ENROLLED"
+  | "PENDING_APPROVAL"
+  | "PENDING_PAYMENT"
+  | "ACTIVE"
+  | "EXPIRED"
+  | "REVOKED"
+  | "ARCHIVED";
 
 export interface Money {
   amount: number;
@@ -103,8 +121,8 @@ export interface CourseSummary {
   totalDurationSeconds: number;
   rating?: number | null;
   studentCount?: number | null;
-  university?: Pick<University, 'id' | 'name' | 'nameAr'> | null;
-  academicYear?: Pick<AcademicYear, 'id' | 'name' | 'nameAr'> | null;
+  university?: Pick<University, "id" | "name" | "nameAr"> | null;
+  academicYear?: Pick<AcademicYear, "id" | "name" | "nameAr"> | null;
   access: CourseAccess;
   progress: CourseProgress | null;
   publishedAt: string | null;
@@ -133,7 +151,7 @@ export interface CourseSection {
   lessons: LessonSummary[];
 }
 
-export type LessonKind = 'VIDEO' | 'DOCUMENT' | 'QUIZ' | 'LIVE';
+export type LessonKind = "VIDEO" | "DOCUMENT" | "QUIZ" | "LIVE";
 
 export interface LessonSummary {
   id: string;
@@ -161,7 +179,7 @@ export interface LessonDetail extends LessonSummary {
 }
 
 export interface CompletionRule {
-  type: 'WATCH_PERCENT' | 'MANUAL' | 'WATCH_FULL';
+  type: "WATCH_PERCENT" | "MANUAL" | "WATCH_FULL";
   threshold: number;
   requireContiguous: boolean;
 }
@@ -176,10 +194,11 @@ export interface VideoRef {
   availableQualities: string[];
   hasCaptions: boolean;
   captionLanguages: string[];
-  status: 'UPLOADING' | 'QUEUED' | 'PROCESSING' | 'READY' | 'FAILED' | 'ARCHIVED';
+  status:
+    "UPLOADING" | "QUEUED" | "PROCESSING" | "READY" | "FAILED" | "ARCHIVED";
 }
 
-export type DrmScheme = 'widevine' | 'fairplay' | 'none';
+export type DrmScheme = "widevine" | "fairplay" | "none";
 
 export interface PlaybackTicket {
   ticketId: string;
@@ -226,11 +245,12 @@ export interface WatchProgress {
 
 export interface ContinueWatchingItem {
   lesson: LessonSummary;
-  course: Pick<CourseSummary, 'id' | 'title' | 'thumbnailUrl' | 'teacher'>;
+  course: Pick<CourseSummary, "id" | "title" | "thumbnailUrl" | "teacher">;
   progress: WatchProgress;
 }
 
-export type AttachmentKind = 'PDF' | 'IMAGE' | 'DOC' | 'SHEET' | 'LINK' | 'OTHER';
+export type AttachmentKind =
+  "PDF" | "IMAGE" | "DOC" | "SHEET" | "LINK" | "OTHER";
 
 export interface Attachment {
   id: string;
@@ -265,16 +285,16 @@ export interface EnrollmentResult {
 }
 
 export type NotificationKind =
-  | 'NEW_COURSE'
-  | 'NEW_SECTION'
-  | 'NEW_LESSON'
-  | 'NEW_VIDEO'
-  | 'ANNOUNCEMENT'
-  | 'PAYMENT'
-  | 'ENROLLMENT'
-  | 'COURSE_UPDATE'
-  | 'ADMIN'
-  | 'SECURITY';
+  | "NEW_COURSE"
+  | "NEW_SECTION"
+  | "NEW_LESSON"
+  | "NEW_VIDEO"
+  | "ANNOUNCEMENT"
+  | "PAYMENT"
+  | "ENROLLMENT"
+  | "COURSE_UPDATE"
+  | "ADMIN"
+  | "SECURITY";
 
 export interface AppNotification {
   id: string;
@@ -287,7 +307,7 @@ export interface AppNotification {
   imageUrl: string | null;
 }
 
-export type SearchEntity = 'COURSE' | 'LESSON' | 'TEACHER' | 'ATTACHMENT';
+export type SearchEntity = "COURSE" | "LESSON" | "TEACHER" | "ATTACHMENT";
 
 export interface SearchResultGroup {
   entity: SearchEntity;
@@ -329,7 +349,8 @@ export interface HomeFeed {
   };
 }
 
-export type AdTargetType = 'NONE' | 'COURSE' | 'SECTION' | 'LESSON' | 'EXTERNAL_URL' | 'APP_SCREEN';
+export type AdTargetType =
+  "NONE" | "COURSE" | "SECTION" | "LESSON" | "EXTERNAL_URL" | "APP_SCREEN";
 
 export interface AdTarget {
   type: AdTargetType;
@@ -358,7 +379,7 @@ export interface CoursePartSection {
   locked: boolean;
 }
 
-export type CoursePartOwnership = 'PART_PURCHASE' | 'FULL_COURSE';
+export type CoursePartOwnership = "PART_PURCHASE" | "FULL_COURSE";
 
 export interface CoursePart {
   id: string;
@@ -409,7 +430,7 @@ export interface CoursePartsResponse {
   parts: CoursePart[];
 }
 
-export type CoursePartAcquisition = 'CODE' | 'WALLET';
+export type CoursePartAcquisition = "CODE" | "WALLET";
 
 export interface CoursePartPurchase {
   id: string;
@@ -423,7 +444,7 @@ export interface CoursePartPurchase {
   acquiredAt: string;
 }
 
-export type CodeTargetType = 'COURSE' | 'PART' | 'SECTION' | 'TEACHER';
+export type CodeTargetType = "COURSE" | "PART" | "SECTION" | "TEACHER";
 
 export interface CodeValidation {
   valid: boolean;
@@ -446,7 +467,7 @@ export interface WalletSummary {
   updatedAt: string;
 }
 
-export type WalletTxDirection = 'CREDIT' | 'DEBIT';
+export type WalletTxDirection = "CREDIT" | "DEBIT";
 
 export interface WalletTransaction {
   id: string;
@@ -546,7 +567,7 @@ export interface MyLibraryItem {
   available: boolean;
 }
 
-export type LibraryPurchaseKind = 'PART' | 'PACKAGE';
+export type LibraryPurchaseKind = "PART" | "PACKAGE";
 
 export interface LibraryQuote {
   kind: LibraryPurchaseKind;
@@ -600,15 +621,10 @@ export interface LibraryDocumentTicket {
   watermark: WatermarkPayload;
 }
 
-export type SupportTicketStatus = 'OPEN' | 'PENDING' | 'RESOLVED' | 'CLOSED';
-export type SupportTicketPriority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
+export type SupportTicketStatus = "OPEN" | "PENDING" | "RESOLVED" | "CLOSED";
+export type SupportTicketPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 export type SupportTicketCategory =
-  | 'GENERAL'
-  | 'TECHNICAL'
-  | 'PAYMENT'
-  | 'ACCESS'
-  | 'CONTENT'
-  | 'OTHER';
+  "GENERAL" | "TECHNICAL" | "PAYMENT" | "ACCESS" | "CONTENT" | "OTHER";
 
 export interface SupportTicketSummary {
   id: string;

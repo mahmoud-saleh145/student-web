@@ -96,13 +96,25 @@ async function handleProxy(
   const deviceId = existingDeviceId ?? newDeviceId();
   const isNewDevice = existingDeviceId === null;
 
+  // Built BEFORE the auth branch, because it is needed by both.
+  //
+  // It used to be built after, which meant the unauthenticated path below sent
+  // only `pathStr` — silently discarding the whole query string. That is why
+  // `?departmentId=…` and `?studyType=…` appeared to work for a signed-in
+  // student and did nothing on the registration screen, where nobody is signed
+  // in yet: the student was shown the platform-wide year list no matter which
+  // college they had just picked.
+  const url = new URL(request.url);
+  const queryString = url.searchParams.toString();
+  const backendPath = queryString ? `${pathStr}?${queryString}` : pathStr;
+
   const accessToken = await getAccessToken();
   if (!accessToken) {
     if (isPublicReadPath(method, pathStr)) {
       // Registration lists, read before the student has an account. No token,
       // no refresh and no cookies are involved, so this path ends here.
       try {
-        const result = await backendRequest({ method, path: `/${pathStr}`, locale });
+        const result = await backendRequest({ method, path: `/${backendPath}`, locale });
         return NextResponse.json({ success: true, data: result.data, meta: result.meta });
       } catch (e) {
         const apiErr = asApiError(e);
@@ -111,10 +123,6 @@ async function handleProxy(
     }
     return jsonError(401, 'UNAUTHORIZED', 'Not signed in');
   }
-
-  const url = new URL(request.url);
-  const queryString = url.searchParams.toString();
-  const backendPath = queryString ? `${pathStr}?${queryString}` : pathStr;
 
   let body: unknown;
   if (method !== 'GET' && method !== 'DELETE') {
@@ -158,9 +166,18 @@ async function handleProxy(
 
     if (isRefreshCoolingDown()) {
       // A refresh failed very recently for a reason unrelated to the token.
-      // Retrying now would hammer the failing endpoint; report the original 401
-      // instead so the client falls back to sign-in.
-      return jsonError(401, apiErr.code, apiErr.message);
+      // Retrying now would hammer the failing endpoint.
+      //
+      // Reported as retryable, NOT as the original 401. `endsSession()` treats
+      // any 401 as fatal and the client clears the cookies and returns to
+      // sign-in, so relaying the upstream 401 here turned one unreachable
+      // backend into a logout — while the session itself was still perfectly
+      // valid. The student stays signed in and the next request tries again.
+      return jsonError(
+        503,
+        'SESSION_REFRESH_UNAVAILABLE',
+        'Your session could not be renewed right now. Please try again.'
+      );
     }
 
     // Captured before the refresh starts. Sign-out and sign-in bump the
@@ -183,8 +200,17 @@ async function handleProxy(
       }
       // Inconclusive (5xx / 429 / timeout). Keep the session, but stop trying for
       // a cooldown so one broken refresh cannot become a refresh storm.
+      //
+      // The comment above used to say "report the original 401" — which is
+      // exactly the bug: a 401 here ends the session client-side no matter how
+      // valid it still is. Retryable is the honest answer, because nothing has
+      // said this session is over.
       noteRefreshFailure();
-      return jsonError(401, apiErr.code, apiErr.message);
+      return jsonError(
+        503,
+        'SESSION_REFRESH_UNAVAILABLE',
+        'Your session could not be renewed right now. Please try again.'
+      );
     }
 
     // The refresh may have been overtaken: the user signed out or signed in

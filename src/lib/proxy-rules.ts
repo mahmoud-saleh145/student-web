@@ -9,39 +9,39 @@
  * `search/` stay allowed on purpose: they are public browsing.
  */
 export const BLOCKED_PREFIXES = [
-  'auth/login',
-  'auth/register',
-  'auth/refresh',
-  'auth/logout',
-  'payments/webhooks',
-  'admin',
-  'analytics',
-  'audit',
-  'security-events',
-  'sessions',
-  'master',
-  'storage/admin',
-  'storage/internal',
-  'users/admin',
-  'enrollments/admin',
-  'courses/admin',
-  'notifications/broadcast',
-  'notifications/announcements',
-  'notifications/course',
+  "auth/login",
+  "auth/register",
+  "auth/refresh",
+  "auth/logout",
+  "payments/webhooks",
+  "admin",
+  "analytics",
+  "audit",
+  "security-events",
+  "sessions",
+  "master",
+  "storage/admin",
+  "storage/internal",
+  "users/admin",
+  "enrollments/admin",
+  "courses/admin",
+  "notifications/broadcast",
+  "notifications/announcements",
+  "notifications/course",
 ];
 
 export function isBlockedPath(pathStr: string): boolean {
-  const normalized = pathStr.replace(/^\/+|\/+$/g, '');
+  const normalized = pathStr.replace(/^\/+|\/+$/g, "");
   if (
     BLOCKED_PREFIXES.some(
-      (p) => normalized === p || normalized.startsWith(p + '/')
+      (p) => normalized === p || normalized.startsWith(p + "/"),
     )
   ) {
     return true;
   }
   // Prevent access to staff breakdown/export routes
-  const segments = normalized.split('/');
-  if (segments.includes('admin') || segments.includes('students')) {
+  const segments = normalized.split("/");
+  if (segments.includes("admin") || segments.includes("students")) {
     return true;
   }
   return false;
@@ -66,10 +66,21 @@ const PUBLIC_READ_PATHS: RegExp[] = [
   /^catalog\/universities\/[A-Za-z0-9_-]+\/faculties$/,
   /^catalog\/faculties\/[A-Za-z0-9_-]+\/departments$/,
   /^catalog\/academic-years$/,
+  /*
+    The registration screen's single academic call. It replaces the separate
+    `academic-years` fetch there, because the label ("Year" or "Level") and the
+    options have to come from the same resolution — asking for them separately
+    and reconciling on the client is how a levels college ends up asking
+    "Which year are you in?".
+
+    Exact for the same reason as the rest of this list: no prefix match, so a
+    future catalog route is not made public by accident.
+  */
+  /^catalog\/academic-selection$/,
 ];
 
 export function isPublicReadPath(method: string, pathStr: string): boolean {
-  if (method !== 'GET') return false;
-  const normalized = pathStr.replace(/^\/+|\/+$/g, '');
+  if (method !== "GET") return false;
+  const normalized = pathStr.replace(/^\/+|\/+$/g, "");
   return PUBLIC_READ_PATHS.some((rx) => rx.test(normalized));
 }
