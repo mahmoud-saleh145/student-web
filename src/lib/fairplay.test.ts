@@ -10,6 +10,7 @@ import {
   fromBase64,
   parseFairPlayLicenseResponse,
   toBase64,
+  videoErrorDetail,
   type InitDataBuilder,
 } from './fairplay.ts';
 
@@ -264,5 +265,54 @@ describe('FairPlay failure stage tagging', () => {
       // only the bare code survives.
       assert.ok(!/https?:|skd:\/\/|none was fetched|carried no content identifier/i.test(stage));
     }
+  });
+});
+
+/**
+ * Shaka raises VIDEO_ERROR (3016) from exactly one place - StreamingEngine,
+ * reading the <video> element's error - and it does so only after DRM init and
+ * the licence exchange. The payload is
+ * [code, MediaError.code, msExtendedCode, message].
+ *
+ * MediaError.code is the discriminator that separates a Safari media-layer
+ * refusal from anything DRM-related: 1 ABORTED, 2 NETWORK, 3 DECODE,
+ * 4 SRC_NOT_SUPPORTED.
+ */
+describe('VIDEO_ERROR media-element detail', () => {
+  it('extracts MediaError.code and msExtendedCode from a VIDEO_ERROR payload', () => {
+    assert.deepEqual(videoErrorDetail({ code: 3016, data: [3016, 4, '80004005', 'msg'] }), {
+      code: 4,
+      ext: '80004005',
+    });
+    assert.deepEqual(videoErrorDetail({ code: 3016, data: [3016, 3] }), { code: 3, ext: undefined });
+  });
+
+  it('ignores payloads from other Shaka error codes', () => {
+    // A licence failure must not be mislabelled as a media failure.
+    assert.equal(videoErrorDetail({ code: 6008, data: [6008, 4, 'x', 'msg'] }), null);
+    assert.equal(videoErrorDetail({ code: 6001, data: [6001, 4, 'x'] }), null);
+  });
+
+  it('never returns the browser MediaError message', () => {
+    const detail = videoErrorDetail({
+      code: 3016,
+      data: [3016, 2, 'ff', 'The media could not be loaded from https://v.example/main.m3u8'],
+    });
+    const serialised = JSON.stringify(detail);
+    assert.ok(!/https?:|example|media could not/i.test(serialised));
+    assert.equal(detail?.code, 2);
+  });
+
+  it('is defensive about malformed payloads', () => {
+    assert.equal(videoErrorDetail(null), null);
+    assert.equal(videoErrorDetail(undefined), null);
+    assert.equal(videoErrorDetail({ code: 3016, data: 'nope' }), null);
+    assert.equal(videoErrorDetail({ code: 3016, data: [3016] }), null);
+    assert.equal(videoErrorDetail({ code: 3016, data: [3016, 'four'] }), null);
+    // A non-hex extended code is dropped rather than emitted.
+    assert.deepEqual(videoErrorDetail({ code: 3016, data: [3016, 1, 'not-hex!!'] }), {
+      code: 1,
+      ext: undefined,
+    });
   });
 });

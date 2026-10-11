@@ -21,6 +21,7 @@ import {
   createFairPlayInitDataTransform,
   fairPlayStageFromMessage,
   parseFairPlayLicenseResponse,
+  videoErrorDetail,
 } from '@/lib/fairplay';
 
 /**
@@ -94,6 +95,14 @@ export default function DrmVideo({
   // report back. Always a fixed token: never a URL, token, certificate or
   // Shaka message.
   const [stage, setStage] = React.useState<string | null>(null);
+  // Ordered, sanitised trace of how far playback actually got. A single error
+  // code cannot say whether the licence was ever requested, and that is the one
+  // thing that separates a FairPlay contract failure from a media-layer failure.
+  // Every token here is a fixed literal or a MediaError number.
+  const [trace, setTrace] = React.useState<string[]>([]);
+  const mark = React.useCallback((token: string) => {
+    setTrace((prev) => (prev.includes(token) ? prev : [...prev, token]));
+  }, []);
 
   // Keep the latest callbacks reachable without making them effect dependencies,
   // which would tear down and rebuild the player on every parent render.
@@ -197,18 +206,34 @@ export default function DrmVideo({
         if (!ne) {
           // Without these filters the licence exchange cannot work, so fail
           // loudly rather than degrading to a request Gumlet will reject.
+          setStage('FP_NO_NETWORK_ENGINE');
           setFatal('Protected playback is unavailable: the player network stack failed to initialise.');
           return;
         }
         ne.registerRequestFilter((type, request) => {
           if (type !== shaka.net.NetworkingEngine.RequestType.LICENSE) return;
+          mark('LIC_REQ');
           request.headers['Content-Type'] = 'application/json';
           request.body = buildFairPlayLicenseRequest(request.body);
         });
         ne.registerResponseFilter((type, response) => {
           if (type !== shaka.net.NetworkingEngine.RequestType.LICENSE) return;
+          mark('LIC_RES');
           response.data = parseFairPlayLicenseResponse(response.data);
         });
+      } else {
+        // Widevine/PlayReady branch: observe only. No payload is touched and no
+        // DRM configuration changes - this exists so a healthy desktop/Android
+        // run produces the same trace and can be compared against iOS.
+        const ne = player.getNetworkingEngine();
+        if (ne) {
+          ne.registerRequestFilter((type) => {
+            if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) mark('LIC_REQ');
+          });
+          ne.registerResponseFilter((type) => {
+            if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) mark('LIC_RES');
+          });
+        }
       }
 
       // --- lifecycle --------------------------------------------------------
@@ -237,16 +262,24 @@ export default function DrmVideo({
         // identifiable in production. Only the tag is emitted - never the
         // surrounding message, which could quote a URL or payload.
         const fpStage = fairPlayStageFromMessage(detail?.message);
+        // VIDEO_ERROR (3016) is raised only from the <video> element's error by
+        // StreamingEngine, which runs after DRM init and after the licence
+        // exchange. Its payload is [code, MediaError.code, msExtendedCode,
+        // message]; we read the two NUMBERS and never the message.
+        const media = videoErrorDetail(detail);
+        if (media) mark(`MEDIA_${media.code}${media.ext ? '_' + media.ext : ''}`);
         const reported = fpStage
           ? `DRM_FAIRPLAY_${fpStage}`
           : isLicence
             ? `DRM_LICENCE_${name}`
             : `DRM_PLAYBACK_${name}`;
+        mark(fpStage ? `ERR_${fpStage}` : media ? `ERR_${name}_${media.code}` : `ERR_${name}`);
         setStage(reported);
         cbs.current.onError?.(reported);
       });
 
       try {
+        mark('MANIFEST');
         await player.load(manifestUrl);
       } catch (e) {
         if (disposed) return;
@@ -261,11 +294,23 @@ export default function DrmVideo({
               : `Could not start protected playback (${name}). Please reload the lesson.`,
         );
         const reported = fpStage ? `DRM_FAIRPLAY_${fpStage}` : `DRM_PLAYBACK_${name}`;
+        mark(fpStage ? `ERR_${fpStage}` : `ERR_${name}`);
         setStage(reported);
         cbs.current.onError?.(reported);
         return;
       }
       if (disposed) return;
+      mark('LOADED');
+
+      // Backstop for the media layer. Shaka raises VIDEO_ERROR from the same
+      // signal, but a native-source failure can reach the element without it, and
+      // MediaError.code is the single most useful discriminator on Safari:
+      // 1 ABORTED, 2 NETWORK, 3 DECODE, 4 SRC_NOT_SUPPORTED. Numbers only - the
+      // MediaError message is never read, let alone logged.
+      video?.addEventListener('error', () => {
+        const err = video?.error;
+        mark(`MEDIA_${err ? err.code : 'X'}`);
+      });
 
       // Captions: Gumlet delivers them as URLs, so push them into Shaka rather
       // than into <track> elements, which Shaka does not read.
@@ -299,7 +344,7 @@ export default function DrmVideo({
       }
       void video;
     };
-  }, [manifestUrl, drm.scheme, drm.licenseUrl, drm.certificateUrl, captionsEnabled, captions]);
+  }, [manifestUrl, drm.scheme, drm.licenseUrl, drm.certificateUrl, captionsEnabled, captions, mark]);
 
   return (
     <div ref={undefined} className="relative mx-auto w-full max-w-5xl" data-protected>
@@ -324,6 +369,14 @@ export default function DrmVideo({
               className="max-w-md font-mono text-[11px] tracking-wider text-white/50 select-none"
             >
               {stage}
+            </p>
+          ) : null}
+          {trace.length ? (
+            <p
+              data-drm-trace={trace.join('>')}
+              className="max-w-md font-mono text-[10px] tracking-wider text-white/35 select-none"
+            >
+              {trace.join(' > ')}
             </p>
           ) : null}
           <p className="max-w-md text-[11px] text-white/40">

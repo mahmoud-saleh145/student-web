@@ -118,6 +118,16 @@ describe('DrmVideo Shaka wiring', () => {
   }
 });
 
+it('traces the stages reached so a licence failure is separable', () => {
+  // A single error code cannot say whether the licence was ever requested.
+  assert.match(code, /data-drm-trace=\{trace\.join\('>'\)\}/);
+  for (const t of ['MANIFEST', 'LIC_REQ', 'LIC_RES', 'LOADED', 'MEDIA_']) {
+    assert.ok(code.includes(t), `missing trace token ${t}`);
+  }
+  // The Widevine branch observes the same stages without touching payloads.
+  assert.match(code, /registerRequestFilter\(\(type\) => \{/);
+});
+
 it('still refuses to play without a licence or a manifest', () => {
     assert.match(DrmVideo, /if \(drm\.scheme === 'none' \|\| !drm\.licenseUrl\)/);
     assert.match(DrmVideo, /if \(!manifestUrl\)/);

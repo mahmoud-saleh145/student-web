@@ -158,6 +158,32 @@ export function parseFairPlayLicenseResponse(
 const SKD_PREFIX = 'skd://';
 
 /**
+ * Extract the numeric media-element detail from a Shaka VIDEO_ERROR payload.
+ *
+ * Shaka raises `VIDEO_ERROR` (3016) from exactly one place: StreamingEngine,
+ * when the `<video>` element's `error` property is set. The payload is
+ * `[code, MediaError.code, msExtendedCode, message]`.
+ *
+ * Only the two NUMBERS are returned. `data[3]` is the browser's MediaError
+ * message, which can quote a source URL, so it is never read.
+ *
+ * MediaError.code: 1 ABORTED, 2 NETWORK, 3 DECODE, 4 SRC_NOT_SUPPORTED.
+ */
+export function videoErrorDetail(detail: {
+  code?: number;
+  data?: unknown;
+} | null | undefined): { code: number; ext?: string } | null {
+  if (detail?.code !== 3016) return null;
+  const data = detail.data;
+  if (!Array.isArray(data)) return null;
+  const code = data[1];
+  if (typeof code !== 'number' || !Number.isInteger(code)) return null;
+  const raw = data[2];
+  const ext = typeof raw === 'string' && /^[0-9a-f]+$/i.test(raw) ? raw.toLowerCase() : undefined;
+  return { code, ext };
+}
+
+/**
  * Stage marker for FairPlay init-data failures.
  *
  * Shaka runs `initDataTransform` deep inside its DRM engine and replaces the
