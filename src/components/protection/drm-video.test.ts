@@ -74,15 +74,21 @@ describe('DrmVideo Shaka wiring', () => {
     assert.match(code, /serverCertificateUri/);
   });
 
-  it('does not override Shaka default initDataTransform', () => {
-    // Shaka 4.11.7's DEFAULT initDataTransform already handles FairPlay `skd`
-    // init data: when the Apple MediaKeys polyfill is present and initDataType
-    // is 'skd', it derives the content ID with FairPlayUtils.defaultGetContentId
-    // and rebuilds the init blob with the server certificate. That was verified
-    // by executing Shaka 4.11.7 against the production asset's real skd data.
-    // Supplying our own would replace a verified behaviour with a guess.
-    assert.doesNotMatch(code, /initDataTransform/);
-    assert.doesNotMatch(code, /defaultGetContentId/);
+  it('configures the init-data transform on FairPlay only', () => {
+    // Shaka's default transform guards on initDataType === 'skd', which
+    // Gumlet's HLS never produces: the parser emits 'sinf' with an empty
+    // buffer and puts the skd:// URI on drmInfo.keySystemUris. FairPlay
+    // therefore needs ours; Widevine must keep Shaka's default untouched.
+    assert.match(code, /initDataTransform/);
+    assert.match(code, /createFairPlayInitDataTransform/);
+    assert.match(code, /FairPlayUtils\.initDataTransform/);
+
+    // Prove the transform sits inside the isFairPlay guard rather than in the
+    // shared config, so no Widevine ticket can ever pick it up.
+    assert.match(
+      code,
+      /\.\.\.\(isFairPlay\s*\?\s*\{[\s\S]{0,400}?initDataTransform[\s\S]{0,200}?\}\s*:\s*\{\s*\}\)/,
+    );
   });
 
   it('configures both FairPlay key-system names', () => {

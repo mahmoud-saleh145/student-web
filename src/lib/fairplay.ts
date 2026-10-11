@@ -127,3 +127,116 @@ export function parseFairPlayLicenseResponse(
 
   return fromBase64(ckc).buffer as ArrayBuffer;
 }
+
+// ---------------------------------------------------------------------------
+// Content ID derivation from Gumlet's `skd://` signalling
+// ---------------------------------------------------------------------------
+
+/**
+ * WHY A CUSTOM INIT-DATA TRANSFORM IS REQUIRED HERE
+ *
+ * Shaka 4.11.7's HLS parser maps `KEYFORMAT=com.apple.streamingkeydelivery`
+ * to a DrmInfo like this:
+ *
+ *   keySystem        'com.apple.fps'
+ *   initDataType     'sinf'
+ *   initData         new Uint8Array(0)     <- EMPTY
+ *   keySystemUris    Set { 'skd://<id>' }
+ *
+ * Shaka's DEFAULT init-data transform is guarded on `initDataType === 'skd'`,
+ * a type only produced by the legacy Apple MediaKeys polyfill. This content
+ * arrives as 'sinf', so the default returns the empty buffer untouched: no
+ * content id is derived, `FairPlayUtils.initDataTransform` is never called, and
+ * Safari builds a licence request for an empty content id that the server
+ * cannot satisfy.
+ *
+ * So the content id has to come from `drmInfo.keySystemUris` instead. Shaka's
+ * own FairPlay tutorial documents exactly this: when `initDataType != 'skd'`,
+ * "it is possible to get the skd urls from drmInfo".
+ */
+
+const SKD_PREFIX = 'skd://';
+
+/** The slice of `shaka.extern.DrmInfo` this module reads. */
+export type FairPlayDrmInfo = {
+  keySystemUris?: Set<string> | null;
+  serverCertificate?: Uint8Array | ArrayBuffer | null;
+};
+
+/** Injected so this module stays free of Shaka imports and stays unit-testable. */
+export type InitDataBuilder = (
+  initData: Uint8Array,
+  contentId: string,
+  cert: Uint8Array | ArrayBuffer,
+) => Uint8Array;
+
+/**
+ * Pull the `skd://` URI out of a DrmInfo's key-system URIs.
+ *
+ * Returns null when there is none, so the caller can fail explicitly instead of
+ * proceeding with a guess. A bare `skd://` with no identifier is rejected too:
+ * an empty content id is the exact failure this whole path exists to avoid.
+ */
+export function findSkdUri(keySystemUris: Iterable<string> | null | undefined): string | null {
+  if (!keySystemUris) return null;
+  for (const uri of keySystemUris) {
+    if (typeof uri === 'string' && uri.startsWith(SKD_PREFIX) && uri.length > SKD_PREFIX.length) {
+      return uri;
+    }
+  }
+  return null;
+}
+
+/**
+ * Content id carried by a Gumlet `skd://` URI: everything after the scheme.
+ *
+ * Verified against the installed Shaka 4.11.7: `defaultGetContentId` returns
+ * exactly this for both the `skd://<id>` and `//<id>` forms (the polyfill strips
+ * `skd:` before the transform sees it), with no decoding applied.
+ */
+export function contentIdFromSkdUri(skdUri: string): string {
+  // Strip the scheme, then any authority slashes, so `skd://<id>`, the
+  // polyfill's `//<id>` and a bare `<id>` all normalise to the same value.
+  const id = skdUri.replace(/^skd:/i, '').replace(/^\/+/, '');
+  if (!id) {
+    throw new Error('FairPlay skd:// URI carried no content identifier');
+  }
+  return id;
+}
+
+/**
+ * Build the `drm.initDataTransform` for the FairPlay branch.
+ *
+ * Configure this ONLY when the ticket's scheme is FairPlay. Widevine keeps
+ * Shaka's default behaviour, which is correct for DASH PSSH content.
+ *
+ * Every failure path throws with a specific message. There is deliberately no
+ * fallback that returns `initData` untouched: that is the silent-degradation
+ * shape this component refuses elsewhere, and it produces a licence error that
+ * is indistinguishable from a server fault.
+ *
+ * @param build `shaka.util.FairPlayUtils.initDataTransform`, injected.
+ */
+export function createFairPlayInitDataTransform(build: InitDataBuilder) {
+  return (
+    initData: Uint8Array,
+    initDataType: string,
+    drmInfo: FairPlayDrmInfo | null,
+  ): Uint8Array => {
+    const skdUri = findSkdUri(drmInfo?.keySystemUris);
+    if (!skdUri) {
+      throw new Error(
+        'FairPlay init data carried no skd:// URI, so no content id could be derived',
+      );
+    }
+
+    const cert = drmInfo?.serverCertificate;
+    if (!cert || cert.byteLength === 0) {
+      // Shaka's own helper throws the same way (error 6015). Catching it here
+      // turns a numeric code into a sentence that names the cause.
+      throw new Error('FairPlay init data requires a server certificate; none was fetched');
+    }
+
+    return build(initData, contentIdFromSkdUri(skdUri), cert);
+  };
+}

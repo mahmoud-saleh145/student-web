@@ -18,6 +18,7 @@ import 'shaka-player/dist/controls.css';
 import { Watermark } from '@/components/protection/Watermark';
 import {
   buildFairPlayLicenseRequest,
+  createFairPlayInitDataTransform,
   parseFairPlayLicenseResponse,
 } from '@/lib/fairplay';
 
@@ -154,6 +155,21 @@ export default function DrmVideo({
               ? {
                   [fairplay]: { serverCertificateUri: drm.certificateUrl },
                   [fairplayLegacy]: { serverCertificateUri: drm.certificateUrl },
+                }
+              : {}),
+            // FairPlay ONLY. Gumlet's HLS signals keys with
+            // KEYFORMAT=com.apple.streamingkeydelivery, which Shaka's parser
+            // turns into initDataType 'sinf' with an EMPTY buffer plus the
+            // skd:// URI on drmInfo.keySystemUris. Shaka's default transform
+            // keys off 'skd', so it never fires here and the content id is
+            // never derived - Safari would then build a licence request for an
+            // empty content id that the server cannot satisfy. See
+            // lib/fairplay.ts for the full trace.
+            ...(isFairPlay
+              ? {
+                  initDataTransform: createFairPlayInitDataTransform((initData, contentId, cert) =>
+                    shaka.util.FairPlayUtils.initDataTransform(initData, contentId, cert),
+                  ),
                 }
               : {}),
           },
