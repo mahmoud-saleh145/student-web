@@ -20,7 +20,6 @@ import {
   buildFairPlayLicenseRequest,
   createFairPlayInitDataTransform,
   fairPlayStageFromMessage,
-  FAIRPLAY_LEGACY_INIT_DATA_TYPE,
   parseFairPlayLicenseResponse,
   videoErrorDetail,
 } from '@/lib/fairplay';
@@ -197,15 +196,16 @@ export default function DrmVideo({
                       initDataType: string,
                       drmInfo: Parameters<typeof fairPlayTransform>[2],
                     ) => {
-                      // Rebuild ONLY the legacy Apple MediaKeys layout. This asset
-                      // arrives as Modern EME 'sinf', where Safari reads the sinf
+                      // Which init-data type arrived, for the on-screen trace.
+                      mark(`IDT_${initDataType || 'NONE'}`);
+                      // The legacy-vs-modern decision lives in lib/fairplay.ts
+                      // (`shouldTransformFairPlayInitData`) so it is covered by
+                      // behavioural tests rather than by source-text matching.
+                      // Rebuilding only the legacy Apple MediaKeys layout keeps
+                      // Modern EME 'sinf' intact, where Safari reads the sinf
                       // from the CMAF init segment; replacing it with the legacy
-                      // blob strips the key id and the track fails to decode.
-                      if (initDataType !== FAIRPLAY_LEGACY_INIT_DATA_TYPE) {
-                        mark(`IDT_${initDataType || 'NONE'}`);
-                        return initData;
-                      }
-                      mark(`IDT_${initDataType}`);
+                      // blob strips the key id and the track fails to decode
+                      // (MEDIA_3).
                       return fairPlayTransform(initData, initDataType, drmInfo);
                     },
                   };

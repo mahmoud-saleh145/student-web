@@ -61,3 +61,49 @@ describe('detectPlaybackPlatform', () => {
     assert.equal(detectPlaybackPlatform(null), 'web');
   });
 });
+
+/**
+ * Every browser on iOS is WebKit, so Chrome/Edge/Firefox on iPhone are the SAME
+ * media stack as Safari and must be classified identically. Getting this wrong
+ * hands a Widevine licence URL to a device that only implements FairPlay, which
+ * fails at key-system negotiation with REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE
+ * - the failure this module exists to prevent.
+ */
+describe('detectPlaybackPlatform on iOS browsers', () => {
+  const iphone = (token: string) =>
+    `Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) ${token} Mobile/15E148 Safari/604.1`;
+
+  it('classifies iPhone Safari as ios', () => {
+    assert.equal(detectPlaybackPlatform(nav(iphone('Version/17.5'), 'iPhone')), 'ios');
+  });
+
+  it('classifies Chrome on iPhone as ios, not web', () => {
+    // CriOS is WebKit on iOS. Treating it as 'web' is what hands a Widevine
+    // licence URL to a FairPlay-only device.
+    assert.equal(detectPlaybackPlatform(nav(iphone('CriOS/126.0.6478.54'), 'iPhone')), 'ios');
+  });
+
+  it('classifies Edge on iPhone as ios, not web', () => {
+    assert.equal(
+      detectPlaybackPlatform(nav(iphone('EdgiOS/126.0.2592.87 Version/17.0'), 'iPhone')),
+      'ios',
+    );
+  });
+
+  it('classifies Firefox on iPhone as ios', () => {
+    assert.equal(detectPlaybackPlatform(nav(iphone('FxiOS/126.0'), 'iPhone')), 'ios');
+  });
+
+  it('classifies Chrome on iPadOS as ios despite a desktop Safari UA', () => {
+    // iPadOS 13+ sends a Mac UA; only touch points give it away.
+    const ipadChrome =
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/126.0.6478.54 Safari/605.1.15';
+    assert.equal(detectPlaybackPlatform(nav(ipadChrome, 'MacIntel', 5)), 'ios');
+  });
+
+  it('still classifies a desktop Mac as web', () => {
+    const mac =
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/126.0.6478.54 Chrome/126.0.0.0 Safari/537.36';
+    assert.equal(detectPlaybackPlatform(nav(mac, 'MacIntel', 0)), 'web');
+  });
+});

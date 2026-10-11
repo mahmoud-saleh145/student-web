@@ -272,15 +272,41 @@ export function contentIdFromSkdUri(skdUri: string): string {
 }
 
 /**
+ * Whether this init-data type must be rebuilt into the legacy Apple MediaKeys
+ * layout.
+ *
+ * Only `'skd'` may be. Gumlet ships HLS whose FairPlay entry is
+ * `KEYFORMAT=com.apple.streamingkeydelivery`, which Shaka's HLS parser turns into
+ * Modern EME: key system `com.apple.fps`, `initDataType: 'sinf'` and an EMPTY
+ * init-data buffer, with the `skd://` content id on `drmInfo.keySystemUris`.
+ *
+ * Rebuilding a `sinf` payload is what caused `MEDIA_3`. The legacy layout is
+ * `[len][initData][len][contentId][len][cert]`; running it over an empty buffer
+ * discards the key id that the HLS `skd://` URI already supplied. The licence
+ * exchange still succeeded, because Gumlet's licence URL is scoped by org and
+ * asset rather than by key id - so the trace read
+ * `LIC_REQ > LIC_RES > LOADED` and then the `cbcs` samples failed to decrypt,
+ * surfacing as `MEDIA_3` with nothing pointing back at the licence.
+ *
+ * This is the same rule Shaka's own FairPlay tutorial applies, and the same rule
+ * as `shaka.util.FairPlayUtils.initDataTransform`'s default.
+ */
+export function shouldTransformFairPlayInitData(initDataType: string | null | undefined): boolean {
+  return initDataType === FAIRPLAY_LEGACY_INIT_DATA_TYPE;
+}
+
+/**
  * Build the `drm.initDataTransform` for the FairPlay branch.
  *
  * Configure this ONLY when the ticket's scheme is FairPlay. Widevine keeps
  * Shaka's default behaviour, which is correct for DASH PSSH content.
  *
- * Every failure path throws with a specific message. There is deliberately no
- * fallback that returns `initData` untouched: that is the silent-degradation
- * shape this component refuses elsewhere, and it produces a licence error that
- * is indistinguishable from a server fault.
+ * Modern EME init data is returned UNCHANGED and the legacy builder is never
+ * invoked - see {@link shouldTransformFairPlayInitData} for why. For the legacy
+ * `'skd'` path, every failure throws with a specific message. There is
+ * deliberately no fallback that returns `initData` untouched: that is the
+ * silent-degradation shape this component refuses elsewhere, and it produces a
+ * licence error that is indistinguishable from a server fault.
  *
  * @param build `shaka.util.FairPlayUtils.initDataTransform`, injected.
  */
@@ -290,6 +316,12 @@ export function createFairPlayInitDataTransform(build: InitDataBuilder) {
     initDataType: string,
     drmInfo: FairPlayDrmInfo | null,
   ): Uint8Array => {
+    // Modern EME (`sinf`) and any other non-legacy type must pass through
+    // untouched. Rebuilding it strips the key id and produces MEDIA_3.
+    if (!shouldTransformFairPlayInitData(initDataType)) {
+      return initData;
+    }
+
     const skdUri = findSkdUri(drmInfo?.keySystemUris);
     if (!skdUri) {
       throw stageError(

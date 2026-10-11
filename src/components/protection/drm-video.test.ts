@@ -95,12 +95,23 @@ describe('DrmVideo Shaka wiring', () => {
     assert.ok(code.indexOf('initDataTransform:') > guard);
   });
 
-  it('rebuilds only the legacy init-data type, leaving Modern EME sinf alone', () => {
-    // This asset arrives as Modern EME 'sinf'. Safari reads the sinf from the
-    // CMAF init segment; substituting Shaka's legacy blob layout would strip
-    // the key id and the track would fail to decode. The trace token records
-    // which branch actually ran.
-    assert.match(code, /FAIRPLAY_LEGACY_INIT_DATA_TYPE/);
+  it('delegates the legacy-vs-modern decision to the tested helper', () => {
+    // The MEDIA_3 guard used to be an inline `if` here, covered only by the
+    // source-text match that sat at this spot - which would have stayed green if
+    // the `if` were deleted and the comment kept. The decision now lives in
+    // `lib/fairplay.ts` as `shouldTransformFairPlayInitData`, behaviourally
+    // tested in fairplay.test.ts.
+    //
+    // What is asserted HERE is only the wiring: the component marks the trace
+    // token and delegates, and no longer carries its own copy of the rule.
+    assert.match(code, /createFairPlayInitDataTransform/);
+    assert.match(code, /fairPlayTransform\(initData, initDataType, drmInfo\)/);
+
+    // No second, divergent copy of the legacy-type check in this component.
+    assert.doesNotMatch(code, /initDataType\s*!==\s*FAIRPLAY_LEGACY_INIT_DATA_TYPE/);
+    assert.doesNotMatch(code, /initDataType\s*===\s*FAIRPLAY_LEGACY_INIT_DATA_TYPE/);
+
+    // The trace token must still record which init-data type actually arrived.
     assert.match(code, /IDT_\$\{initDataType/);
   });
 

@@ -9,12 +9,27 @@ import {
   findSkdUri,
   fromBase64,
   parseFairPlayLicenseResponse,
+  shouldTransformFairPlayInitData,
   toBase64,
   videoErrorDetail,
   type InitDataBuilder,
 } from './fairplay.ts';
 
 const bytes = (...values: number[]) => new Uint8Array(values);
+
+/**
+ * Records what the injected legacy builder was handed, and returns a marker.
+ * Shared across describes so every init-data test can assert the builder was -
+ * or was NOT - reached.
+ */
+const spyBuilder = () => {
+  const calls: Array<{ initData: Uint8Array; contentId: string; cert: Uint8Array }> = [];
+  const build: InitDataBuilder = (initData, contentId, cert) => {
+    calls.push({ initData, contentId, cert: cert as Uint8Array });
+    return new Uint8Array([1, 2, 3]);
+  };
+  return { calls, build };
+};
 
 /**
  * These lock the wire format to Gumlet's documented contract, taken from
@@ -103,16 +118,6 @@ describe('FairPlay SPC/CKC wire format', () => {
 describe('FairPlay skd:// content id derivation', () => {
   const CERT = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
 
-  /** Records what the injected builder was handed, and returns a marker. */
-  const spyBuilder = () => {
-    const calls: Array<{ initData: Uint8Array; contentId: string; cert: Uint8Array }> = [];
-    const build: InitDataBuilder = (initData, contentId, cert) => {
-      calls.push({ initData, contentId, cert: cert as Uint8Array });
-      return new Uint8Array([1, 2, 3]);
-    };
-    return { calls, build };
-  };
-
   it('finds the skd:// URI among other key-system URIs', () => {
     const uris = new Set(['https://example.test/other', 'skd://CONTENTID1234567890abcd']);
     assert.equal(findSkdUri(uris), 'skd://CONTENTID1234567890abcd');
@@ -139,7 +144,7 @@ describe('FairPlay skd:// content id derivation', () => {
     const transform = createFairPlayInitDataTransform(build);
     const initData = new Uint8Array([9, 9]);
 
-    const out = transform(initData, 'sinf', {
+    const out = transform(initData, 'skd', {
       keySystemUris: new Set(['skd://CONTENTID1234567890abcd']),
       serverCertificate: CERT,
     });
@@ -156,11 +161,11 @@ describe('FairPlay skd:// content id derivation', () => {
     const transform = createFairPlayInitDataTransform(build);
 
     assert.throws(
-      () => transform(new Uint8Array([0]), 'sinf', { keySystemUris: new Set(['https://x/y']), serverCertificate: CERT }),
+      () => transform(new Uint8Array([0]), 'skd', { keySystemUris: new Set(['https://x/y']), serverCertificate: CERT }),
       /no skd:\/\/ URI/,
     );
     assert.throws(
-      () => transform(new Uint8Array([0]), 'sinf', null),
+      () => transform(new Uint8Array([0]), 'skd', null),
       /no skd:\/\/ URI/,
     );
   });
@@ -171,12 +176,12 @@ describe('FairPlay skd:// content id derivation', () => {
     const uris = new Set(['skd://CONTENTID1234567890abcd']);
 
     assert.throws(
-      () => transform(new Uint8Array([0]), 'sinf', { keySystemUris: uris, serverCertificate: null }),
+      () => transform(new Uint8Array([0]), 'skd', { keySystemUris: uris, serverCertificate: null }),
       /requires a server certificate/,
     );
     assert.throws(
       () =>
-        transform(new Uint8Array([0]), 'sinf', {
+        transform(new Uint8Array([0]), 'skd', {
           keySystemUris: uris,
           serverCertificate: new Uint8Array(0),
         }),
@@ -184,16 +189,118 @@ describe('FairPlay skd:// content id derivation', () => {
     );
   });
 
-  it('never falls back to returning the init data untouched', () => {
+  it('never falls back to returning the init data untouched on the legacy path', () => {
     // The degraded shape - return initData and let the CDM try anyway - is what
-    // produces an opaque licence error. Every path must throw instead.
+    // produces an opaque licence error. For 'skd' every path must throw instead.
     const { build } = spyBuilder();
     const transform = createFairPlayInitDataTransform(build);
     const initData = new Uint8Array([7]);
 
     for (const drmInfo of [null, {}, { keySystemUris: null }, { keySystemUris: new Set<string>() }]) {
-      assert.throws(() => transform(initData, 'sinf', drmInfo));
+      assert.throws(() => transform(initData, 'skd', drmInfo));
     }
+  });
+});
+
+/**
+ * The MEDIA_3 regression, tested behaviourally.
+ *
+ * Gumlet's FairPlay is signalled through HLS `KEYFORMAT=com.apple.streamingkeydelivery`,
+ * which Shaka's HLS parser surfaces as Modern EME: `initDataType: 'sinf'` with an
+ * EMPTY init-data buffer and the `skd://` content id on `keySystemUris`.
+ *
+ * Rebuilding that into the legacy Apple MediaKeys layout strips the key id. The
+ * licence still succeeds (Gumlet scopes licences by org and asset, not by key
+ * id), so the trace shows `LIC_REQ > LIC_RES > LOADED` and only then does the
+ * `cbcs` track fail to decode.
+ *
+ * These assert the OBSERVABLE contract: modern init data comes back byte-for-byte
+ * and the legacy builder is never reached.
+ */
+describe('FairPlay init data is only rebuilt for the legacy type', () => {
+  const CERT = new Uint8Array([1, 2, 3, 4]);
+  const uris = new Set(['skd://CONTENTID1234567890abcd']);
+
+  it('only transforms the legacy skd type', () => {
+    assert.equal(shouldTransformFairPlayInitData('skd'), true);
+  });
+
+  it('does not transform Modern EME sinf', () => {
+    assert.equal(shouldTransformFairPlayInitData('sinf'), false);
+  });
+
+  it('does not transform the other known init-data types', () => {
+    for (const type of ['cenc', 'keyids', 'webm', 'mpegdash', 'unknown', '']) {
+      assert.equal(shouldTransformFairPlayInitData(type), false);
+    }
+  });
+
+  it('does not transform a missing init-data type', () => {
+    assert.equal(shouldTransformFairPlayInitData(null), false);
+    assert.equal(shouldTransformFairPlayInitData(undefined), false);
+  });
+
+  it('returns sinf init data unchanged and never calls the legacy builder', () => {
+    // The regression itself. With no skd:// URI and no certificate at all -
+    // the real shape for a sinf stream whose sinf lives in the init segment -
+    // a builder that ran would either throw or emit a stripped blob. Passing
+    // through is the only correct answer, and it must not need any drmInfo.
+    const { calls, build } = spyBuilder();
+    const transform = createFairPlayInitDataTransform(build);
+    const empty = new Uint8Array(0);
+
+    const out = transform(empty, 'sinf', null);
+
+    assert.equal(out, empty, 'must return the very same buffer instance');
+    assert.deepEqual([...out], []);
+    assert.equal(calls.length, 0, 'the legacy builder must not be invoked');
+  });
+
+  it('returns a non-empty sinf buffer byte-for-byte', () => {
+    const { calls, build } = spyBuilder();
+    const transform = createFairPlayInitDataTransform(build);
+    const sinf = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+
+    const out = transform(sinf, 'sinf', { keySystemUris: uris, serverCertificate: CERT });
+
+    assert.deepEqual([...out], [0xde, 0xad, 0xbe, 0xef]);
+    assert.equal(calls.length, 0);
+  });
+
+  it('leaves any other non-legacy type untouched as well', () => {
+    const { calls, build } = spyBuilder();
+    const transform = createFairPlayInitDataTransform(build);
+    const buf = new Uint8Array([4, 5]);
+
+    const out = transform(buf, 'cenc', { keySystemUris: uris, serverCertificate: CERT });
+
+    assert.equal(out, buf);
+    assert.equal(calls.length, 0);
+  });
+
+  it('does not throw on modern init data even with no skd:// URI or certificate', () => {
+    // Guards against the guard being inverted: 'sinf' must never reach the
+    // NO_SKD_URI / NO_CERTIFICATE failure paths.
+    const { build } = spyBuilder();
+    const transform = createFairPlayInitDataTransform(build);
+
+    for (const drmInfo of [null, {}, { keySystemUris: new Set<string>() }, { keySystemUris: null }]) {
+      assert.doesNotThrow(() => transform(new Uint8Array([1]), 'sinf', drmInfo as never));
+    }
+  });
+
+  it('still rebuilds skd, passing the derived content id, init data and cert', () => {
+    const { calls, build } = spyBuilder();
+    const transform = createFairPlayInitDataTransform(build);
+    const initData = new Uint8Array([9, 9]);
+
+    const out = transform(initData, 'skd', { keySystemUris: uris, serverCertificate: CERT });
+
+    assert.deepEqual([...out], [1, 2, 3]);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.contentId, 'CONTENTID1234567890abcd');
+    assert.deepEqual([...calls[0]!.initData], [9, 9]);
+    assert.deepEqual([...calls[0]!.cert], [...CERT]);
   });
 });
 
@@ -210,7 +317,7 @@ describe('FairPlay failure stage tagging', () => {
   const failingTransform = (drmInfo: unknown) =>
     createFairPlayInitDataTransform((() => new Uint8Array()) as InitDataBuilder)(
       new Uint8Array([0]),
-      'sinf',
+      'skd',
       drmInfo as never,
     );
 
