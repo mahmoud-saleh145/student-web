@@ -26,6 +26,21 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Pages only: API routes answer for themselves, and static assets need no session.
-  matcher: ['/((?!api/|_next/|favicon\\.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|ico|woff2?|txt|xml|webmanifest)$).*)'],
+  // Pages only: API routes answer for themselves, and static assets need no
+  // session.
+  //
+  // `.pfb`, `.bcmap` and `.ttf` are here because the protected viewer fetches
+  // pdf.js's standard fonts and CMaps from `/pdfjs/**` at runtime. Without them
+  // those fetches ran through this middleware and were answered with the login
+  // page instead of font data - which fails silently and leaves each device
+  // falling back to its own fonts, so one PDF overlapped on some screens and
+  // rendered correctly on others.
+  //
+  // This MUST stay a literal: Next.js statically analyses the matcher and
+  // rejects an imported identifier ("Invalid segment configuration export
+  // detected"). `lib/middleware-match.ts` carries the same list for the tests to
+  // exercise, and a test asserts the two agree.
+  matcher: [
+    '/((?!api/|_next/|favicon\\.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|ico|woff|woff2|txt|xml|webmanifest|pfb|bcmap|ttf)$).*)',
+  ],
 };
