@@ -5,6 +5,7 @@ import {
   buildFairPlayLicenseRequest,
   contentIdFromSkdUri,
   createFairPlayInitDataTransform,
+  fairPlayStageFromMessage,
   findSkdUri,
   fromBase64,
   parseFairPlayLicenseResponse,
@@ -191,6 +192,77 @@ describe('FairPlay skd:// content id derivation', () => {
 
     for (const drmInfo of [null, {}, { keySystemUris: null }, { keySystemUris: new Set<string>() }]) {
       assert.throws(() => transform(initData, 'sinf', drmInfo));
+    }
+  });
+});
+
+/**
+ * Shaka replaces anything thrown inside `initDataTransform` with its own error,
+ * so the stage has to survive as text. These tests pin both halves: that our
+ * failures are tagged, and that recovery extracts ONLY the tag - never the
+ * surrounding message, which could quote a URL, certificate or payload.
+ */
+describe('FairPlay failure stage tagging', () => {
+  const CERT = new Uint8Array([1, 2, 3, 4]);
+  const uris = new Set(['skd://CONTENTID1234567890abcd']);
+
+  const failingTransform = (drmInfo: unknown) =>
+    createFairPlayInitDataTransform((() => new Uint8Array()) as InitDataBuilder)(
+      new Uint8Array([0]),
+      'sinf',
+      drmInfo as never,
+    );
+
+  it('tags a missing skd:// URI', () => {
+    try {
+      failingTransform({ keySystemUris: new Set(['https://x/y']), serverCertificate: CERT });
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.equal(fairPlayStageFromMessage((e as Error).message), 'FP_NO_SKD_URI');
+    }
+  });
+
+  it('tags a missing certificate', () => {
+    try {
+      failingTransform({ keySystemUris: uris, serverCertificate: null });
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.equal(fairPlayStageFromMessage((e as Error).message), 'FP_NO_CERTIFICATE');
+    }
+  });
+
+  it('tags an empty content identifier', () => {
+    assert.throws(
+      () => contentIdFromSkdUri('skd://'),
+      /NO_SKD_CONTENT_ID|carried no content identifier/,
+    );
+  });
+
+  it('recovers the stage even when Shaka re-wraps the message', () => {
+    // Shaka prefixes its own text; the tag must still be found.
+    const wrapped = 'DrmEngine: key system error [drm-fp]NO_SKD_URI: no content id';
+    assert.equal(fairPlayStageFromMessage(wrapped), 'FP_NO_SKD_URI');
+  });
+
+  it('returns null for anything that is not one of our tags', () => {
+    assert.equal(fairPlayStageFromMessage('LICENSE_REQUEST_FAILED'), null);
+    assert.equal(fairPlayStageFromMessage(''), null);
+    assert.equal(fairPlayStageFromMessage(undefined), null);
+    assert.equal(fairPlayStageFromMessage(null), null);
+    assert.equal(fairPlayStageFromMessage(new Error('plain')), null);
+  });
+
+  it('never leaks message text through the recovered stage', () => {
+    try {
+      failingTransform({ keySystemUris: uris, serverCertificate: new Uint8Array(0) });
+      assert.fail('should have thrown');
+    } catch (e) {
+      const stage = fairPlayStageFromMessage((e as Error).message);
+      assert.ok(stage);
+      assert.match(stage, /^FP_[A-Z_]+$/);
+      // The human sentence, the scheme and the payload shape must all be gone;
+      // only the bare code survives.
+      assert.ok(!/https?:|skd:\/\/|none was fetched|carried no content identifier/i.test(stage));
     }
   });
 });

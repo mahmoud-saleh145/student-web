@@ -12,6 +12,7 @@ import { useLessonByVideo } from '@/features/api';
 import { api, ApiError } from '@/lib/api-client';
 import { formatTimecode } from '@/lib/format';
 import { detectPlaybackPlatform } from '@/lib/playback-platform';
+import { isDrmPlaybackTicket } from '@/lib/drm-playback';
 import { qk } from '@/lib/query-keys';
 import { useTranslation } from '@/lib/session-context';
 import { usePlayerStore } from '@/store/stores';
@@ -234,7 +235,15 @@ function ProtectedPlayer({
         .post(`playback/tickets/${id}/heartbeat`, {
           positionSeconds,
           watchedDeltaSeconds,
-          protection: { secureSurface: false, recording: false, externalDisplay: false },
+          // secureSurface is deliberately OMITTED rather than sent as a constant.
+          // No web API reports whether a <video> is rendering to a protected
+          // surface: EME does not expose the negotiated security level, and
+          // Safari has no equivalent of Android's FLAG_SECURE. Sending a
+          // hardcoded `false` made the backend log INTEGRITY_FAILED at HIGH on
+          // every heartbeat of every session on every platform, which fabricates
+          // an integrity failure and buries real ones. Absent means "not
+          // measured"; that is the honest signal.
+          protection: { recording: false, externalDisplay: false },
         })
         .then((res: unknown) => {
           const r = res as { terminate?: { reason: string } | null; ticket?: PlaybackTicket };
@@ -282,10 +291,13 @@ function ProtectedPlayer({
     };
   }, []);
 
-  // A ticket is DRM when the backend says so and it points at a DASH manifest.
+  // A ticket is DRM when the backend says so and handed us a licence to fetch.
   // hls.js cannot request a licence, so this must be decided before render.
-  const isDrmPlayback =
-    Boolean(ticket) && ticket!.drm.scheme !== 'none' && Boolean(ticket!.drm.licenseUrl) && /\.mpd(\?|$)/i.test(ticket!.manifestUrl);
+  //
+  // Deliberately NOT decided from the manifest extension alone: FairPlay is served
+  // over HLS (Gumlet publishes no DASH FairPlay), and the legacy AES-128 path can
+  // also carry a licence URL. See lib/drm-playback.ts.
+  const isDrmPlayback = isDrmPlaybackTicket(ticket);
 
   if (loading) {
     return (
@@ -345,9 +357,18 @@ function ProtectedPlayer({
                 }
                 onEnded();
               }}
-              onError={() => {
-                // Fatal for this lesson by design: we never fall back to an
-                // unprotected stream. The reason is rendered inside the player.
+              onError={(reason) => {
+                // `reason` is a STABLE, SANITISED stage code assembled in
+                // DrmVideo - e.g. DRM_FAIRPLAY_FP_NO_SKD_URI,
+                // DRM_LICENCE_LICENSE_RESPONSE_REJECTED. It contains no URL,
+                // token, certificate, cookie or payload.
+                //
+                // This used to be discarded outright, which is why production
+                // logs showed no DRM stage at all and the only server-side DRM
+                // signal was the unrelated INTEGRITY_FAILED line. Keep it: it is
+                // the only way to tell a certificate failure from a licence
+                // contract failure on a real device.
+                console.error(`[drm] stage=${reason}`);
               }}
             />
           ) : (

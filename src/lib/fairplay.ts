@@ -157,6 +157,33 @@ export function parseFairPlayLicenseResponse(
 
 const SKD_PREFIX = 'skd://';
 
+/**
+ * Stage marker for FairPlay init-data failures.
+ *
+ * Shaka runs `initDataTransform` deep inside its DRM engine and replaces the
+ * thrown error with one of its own, so the only thing that survives into our
+ * error handling is the message text. Tagging our failures with this prefix
+ * and a fixed code lets the stage be recovered without ever logging the
+ * surrounding message - which could quote a URL, a certificate or a licence
+ * payload we must not emit.
+ */
+export const FAIRPLAY_STAGE_PREFIX = '[drm-fp]';
+
+function stageError(code: string, message: string): Error {
+  return new Error(`${FAIRPLAY_STAGE_PREFIX}${code}: ${message}`);
+}
+
+/** Recover the stage code from a message, or null if it is not one of ours. */
+export function fairPlayStageFromMessage(message: unknown): string | null {
+  const text =
+    typeof message === 'string' ? message : message instanceof Error ? message.message : '';
+  if (!text) return null;
+  const at = text.indexOf(FAIRPLAY_STAGE_PREFIX);
+  if (at < 0) return null;
+  const code = /^([A-Z_]+)/.exec(text.slice(at + FAIRPLAY_STAGE_PREFIX.length));
+  return code ? `FP_${code[1]}` : null;
+}
+
 /** The slice of `shaka.extern.DrmInfo` this module reads. */
 export type FairPlayDrmInfo = {
   keySystemUris?: Set<string> | null;
@@ -199,7 +226,7 @@ export function contentIdFromSkdUri(skdUri: string): string {
   // polyfill's `//<id>` and a bare `<id>` all normalise to the same value.
   const id = skdUri.replace(/^skd:/i, '').replace(/^\/+/, '');
   if (!id) {
-    throw new Error('FairPlay skd:// URI carried no content identifier');
+    throw stageError('NO_SKD_CONTENT_ID', 'FairPlay skd:// URI carried no content identifier');
   }
   return id;
 }
@@ -225,7 +252,8 @@ export function createFairPlayInitDataTransform(build: InitDataBuilder) {
   ): Uint8Array => {
     const skdUri = findSkdUri(drmInfo?.keySystemUris);
     if (!skdUri) {
-      throw new Error(
+      throw stageError(
+        'NO_SKD_URI',
         'FairPlay init data carried no skd:// URI, so no content id could be derived',
       );
     }
@@ -233,8 +261,11 @@ export function createFairPlayInitDataTransform(build: InitDataBuilder) {
     const cert = drmInfo?.serverCertificate;
     if (!cert || cert.byteLength === 0) {
       // Shaka's own helper throws the same way (error 6015). Catching it here
-      // turns a numeric code into a sentence that names the cause.
-      throw new Error('FairPlay init data requires a server certificate; none was fetched');
+      // turns a numeric code into a stage that names the cause.
+      throw stageError(
+        'NO_CERTIFICATE',
+        'FairPlay init data requires a server certificate; none was fetched',
+      );
     }
 
     return build(initData, contentIdFromSkdUri(skdUri), cert);

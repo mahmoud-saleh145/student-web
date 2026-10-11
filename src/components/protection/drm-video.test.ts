@@ -99,7 +99,26 @@ describe('DrmVideo Shaka wiring', () => {
     assert.match(code, /com\.apple\.fps\.1_0/);
   });
 
-  it('still refuses to play without a licence or a manifest', () => {
+  it('reports a sanitised stage code rather than a raw error message', () => {
+    // The reason string is the ONLY DRM telemetry the player produces, so it
+    // must be a stable code. It must never carry a URL, token or payload.
+    assert.match(code, /onError\?\.\(/);
+    assert.match(code, /DRM_FAIRPLAY_/);
+    assert.match(code, /fairPlayStageFromMessage/);
+  });
+
+  it('shows the stage code on screen, not only in the console', () => {
+  // A student on a phone has no devtools. A code that exists only in the
+  // console is a code nobody can report back.
+  assert.match(code, /data-drm-stage=\{stage\}/);
+  assert.match(code, /setStage\(/);
+  // Codes are fixed tokens for every early exit too, not just Shaka errors.
+  for (const s of ['FP_NO_LICENSE', 'FP_NO_MANIFEST', 'BROWSER_UNSUPPORTED']) {
+    assert.match(code, new RegExp(s));
+  }
+});
+
+it('still refuses to play without a licence or a manifest', () => {
     assert.match(DrmVideo, /if \(drm\.scheme === 'none' \|\| !drm\.licenseUrl\)/);
     assert.match(DrmVideo, /if \(!manifestUrl\)/);
   });

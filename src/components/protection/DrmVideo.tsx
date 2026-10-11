@@ -19,6 +19,7 @@ import { Watermark } from '@/components/protection/Watermark';
 import {
   buildFairPlayLicenseRequest,
   createFairPlayInitDataTransform,
+  fairPlayStageFromMessage,
   parseFairPlayLicenseResponse,
 } from '@/lib/fairplay';
 
@@ -88,6 +89,11 @@ export default function DrmVideo({
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const playerRef = React.useRef<shaka.Player | null>(null);
   const [fatal, setFatal] = React.useState<string | null>(null);
+  // Sanitised stage code, rendered on screen as well as logged. A student on a
+  // phone has no console, so a code only in the console is a code nobody can
+  // report back. Always a fixed token: never a URL, token, certificate or
+  // Shaka message.
+  const [stage, setStage] = React.useState<string | null>(null);
 
   // Keep the latest callbacks reachable without making them effect dependencies,
   // which would tear down and rebuild the player on every parent render.
@@ -103,10 +109,12 @@ export default function DrmVideo({
 
       // --- contract checks: refuse, do not downgrade -----------------------
       if (drm.scheme === 'none' || !drm.licenseUrl) {
+        setStage('FP_NO_LICENSE');
         setFatal('This lesson requires DRM, but the server did not return a licence. Playback is blocked.');
         return;
       }
       if (!manifestUrl) {
+        setStage('FP_NO_MANIFEST');
         setFatal('This lesson has no manifest URL. Playback is blocked.');
         return;
       }
@@ -119,6 +127,7 @@ export default function DrmVideo({
 
       shaka.polyfill.installAll();
       if (!shaka.Player.isBrowserSupported()) {
+        setStage('BROWSER_UNSUPPORTED');
         setFatal('This browser cannot play protected video. Try the latest Chrome or Edge.');
         return;
       }
@@ -224,7 +233,17 @@ export default function DrmVideo({
             ? 'This browser or device is not permitted to play protected video.'
             : `Protected playback failed (${name}). Please reload the lesson.`,
         );
-        cbs.current.onError?.(isLicence ? `DRM_LICENCE_${name}` : `DRM_PLAYBACK_${name}`);
+        // Our own init-data failures carry a stage tag so the failing step is
+        // identifiable in production. Only the tag is emitted - never the
+        // surrounding message, which could quote a URL or payload.
+        const fpStage = fairPlayStageFromMessage(detail?.message);
+        const reported = fpStage
+          ? `DRM_FAIRPLAY_${fpStage}`
+          : isLicence
+            ? `DRM_LICENCE_${name}`
+            : `DRM_PLAYBACK_${name}`;
+        setStage(reported);
+        cbs.current.onError?.(reported);
       });
 
       try {
@@ -233,11 +252,17 @@ export default function DrmVideo({
         if (disposed) return;
         const code = (e as { code?: number })?.code;
         const name = code ? (Object.entries(shaka.util.Error.Code).find(([, v]) => v === code)?.[0] ?? 'UNKNOWN') : 'UNKNOWN';
+        const fpStage = fairPlayStageFromMessage((e as { message?: unknown })?.message);
         setFatal(
-          code === shaka.util.Error.Code.REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE
-            ? 'This browser or device is not permitted to play protected video.'
-            : `Could not start protected playback (${name}). Please reload the lesson.`,
+          fpStage
+            ? `Protected playback failed (${fpStage}). Please reload the lesson.`
+            : code === shaka.util.Error.Code.REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE
+              ? 'This browser or device is not permitted to play protected video.'
+              : `Could not start protected playback (${name}). Please reload the lesson.`,
         );
+        const reported = fpStage ? `DRM_FAIRPLAY_${fpStage}` : `DRM_PLAYBACK_${name}`;
+        setStage(reported);
+        cbs.current.onError?.(reported);
         return;
       }
       if (disposed) return;
@@ -293,6 +318,14 @@ export default function DrmVideo({
         >
           <p className="text-sm font-semibold text-danger">Protected playback unavailable</p>
           <p className="max-w-md text-xs text-white/70">{fatal}</p>
+          {stage ? (
+            <p
+              data-drm-stage={stage}
+              className="max-w-md font-mono text-[11px] tracking-wider text-white/50 select-none"
+            >
+              {stage}
+            </p>
+          ) : null}
           <p className="max-w-md text-[11px] text-white/40">
             This lesson is DRM-protected. Protected video cannot be shown in this browser or on this device.
           </p>
