@@ -158,6 +158,20 @@ export function parseFairPlayLicenseResponse(
 const SKD_PREFIX = 'skd://';
 
 /**
+ * The only init-data type that may be rebuilt into the legacy Apple MediaKeys
+ * layout (`[initDataSize][initData][contentIdSize][contentId][certSize][cert]`).
+ *
+ * Gumlet signals FairPlay with `KEYFORMAT=com.apple.streamingkeydelivery`, which
+ * Shaka's HLS parser maps to Modern EME `com.apple.fps` with
+ * `initDataType: 'sinf'`. Under Modern EME the browser consumes the `sinf`
+ * carried in the CMAF init segment; substituting the legacy blob removes the key
+ * identifier and leaves the track undecryptable. Shaka's own FairPlay tutorial
+ * follows the same rule - it rebuilds only for 'skd' and returns everything else
+ * untouched.
+ */
+export const FAIRPLAY_LEGACY_INIT_DATA_TYPE = 'skd';
+
+/**
  * Extract the numeric media-element detail from a Shaka VIDEO_ERROR payload.
  *
  * Shaka raises `VIDEO_ERROR` (3016) from exactly one place: StreamingEngine,

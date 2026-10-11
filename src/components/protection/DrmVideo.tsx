@@ -20,6 +20,7 @@ import {
   buildFairPlayLicenseRequest,
   createFairPlayInitDataTransform,
   fairPlayStageFromMessage,
+  FAIRPLAY_LEGACY_INIT_DATA_TYPE,
   parseFairPlayLicenseResponse,
   videoErrorDetail,
 } from '@/lib/fairplay';
@@ -184,11 +185,31 @@ export default function DrmVideo({
             // empty content id that the server cannot satisfy. See
             // lib/fairplay.ts for the full trace.
             ...(isFairPlay
-              ? {
-                  initDataTransform: createFairPlayInitDataTransform((initData, contentId, cert) =>
+              ? (() => {
+                  // Hoisted so the initDataTransform below can call it while
+                  // still reporting the branch it took to the trace.
+                  const fairPlayTransform = createFairPlayInitDataTransform((initData, contentId, cert) =>
                     shaka.util.FairPlayUtils.initDataTransform(initData, contentId, cert),
-                  ),
-                }
+                  );
+                  return {
+                    initDataTransform: (
+                      initData: Uint8Array,
+                      initDataType: string,
+                      drmInfo: Parameters<typeof fairPlayTransform>[2],
+                    ) => {
+                      // Rebuild ONLY the legacy Apple MediaKeys layout. This asset
+                      // arrives as Modern EME 'sinf', where Safari reads the sinf
+                      // from the CMAF init segment; replacing it with the legacy
+                      // blob strips the key id and the track fails to decode.
+                      if (initDataType !== FAIRPLAY_LEGACY_INIT_DATA_TYPE) {
+                        mark(`IDT_${initDataType || 'NONE'}`);
+                        return initData;
+                      }
+                      mark(`IDT_${initDataType}`);
+                      return fairPlayTransform(initData, initDataType, drmInfo);
+                    },
+                  };
+                })()
               : {}),
           },
         },
@@ -311,6 +332,13 @@ export default function DrmVideo({
         const err = video?.error;
         mark(`MEDIA_${err ? err.code : 'X'}`);
       });
+
+      // Track-level discriminator. MediaError.code cannot say WHICH track
+      // failed, and this asset carries audio in a separate rendition, so an
+      // audio-only failure is otherwise indistinguishable from a video one.
+      video?.addEventListener('loadedmetadata', () => mark('META'));
+      video?.addEventListener('canplay', () => mark('CANPLAY'));
+      video?.addEventListener('playing', () => mark('PLAYING'));
 
       // Captions: Gumlet delivers them as URLs, so push them into Shaka rather
       // than into <track> elements, which Shaka does not read.

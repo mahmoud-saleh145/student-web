@@ -84,11 +84,24 @@ describe('DrmVideo Shaka wiring', () => {
     assert.match(code, /FairPlayUtils\.initDataTransform/);
 
     // Prove the transform sits inside the isFairPlay guard rather than in the
-    // shared config, so no Widevine ticket can ever pick it up.
-    assert.match(
-      code,
-      /\.\.\.\(isFairPlay\s*\?\s*\{[\s\S]{0,400}?initDataTransform[\s\S]{0,200}?\}\s*:\s*\{\s*\}\)/,
-    );
+    // shared config, so no Widevine ticket can ever pick it up. Positional,
+    // not a regex over formatting: the config KEY must appear exactly once,
+    // and only after the isFairPlay spread opens. (The other textual hits are
+    // the shaka.util.FairPlayUtils call it wraps.)
+    const keys = code.match(/\n\s*initDataTransform:/g) ?? [];
+    assert.equal(keys.length, 1);
+    const guard = code.indexOf('...(isFairPlay');
+    assert.ok(guard > -1, 'expected the isFairPlay guard');
+    assert.ok(code.indexOf('initDataTransform:') > guard);
+  });
+
+  it('rebuilds only the legacy init-data type, leaving Modern EME sinf alone', () => {
+    // This asset arrives as Modern EME 'sinf'. Safari reads the sinf from the
+    // CMAF init segment; substituting Shaka's legacy blob layout would strip
+    // the key id and the track would fail to decode. The trace token records
+    // which branch actually ran.
+    assert.match(code, /FAIRPLAY_LEGACY_INIT_DATA_TYPE/);
+    assert.match(code, /IDT_\$\{initDataType/);
   });
 
   it('configures both FairPlay key-system names', () => {
