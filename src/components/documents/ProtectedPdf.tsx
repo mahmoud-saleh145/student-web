@@ -3,7 +3,7 @@
 import * as React from 'react';
 
 import { burnWatermark } from '@/components/protection/Watermark';
-import { pdfjsAssetOptions } from '@/lib/pdfjs-assets';
+import { pdfjsDocumentOptions } from '@/lib/pdfjs-document';
 import { useTranslation } from '@/lib/session-context';
 
 /**
@@ -43,45 +43,12 @@ export function ProtectedPdf({ url, watermark }: { url: string; watermark: strin
           import.meta.url
         ).toString();
 
-        // No credentials: the URL is bound to this viewer by its signature, and
-        // asking for credentials on a cross-origin read would demand a stricter
-        // CORS contract from the edge for no gain.
-        //
-        // `pdfjsAssetOptions` is REQUIRED, not an optimisation. pdf.js fetches
-        // standard-font metrics and CMaps at runtime; without these URLs it
-        // warns ("Ensure that the `standardFontDataUrl` API parameter is
-        // provided."), keeps going, and draws text with substitute advances -
-        // so glyphs overlap and words merge while the page looks like a
-        // corrupted document. See src/lib/pdfjs-assets.ts.
-        //
-        // === DIAGNOSTIC ONLY - NOT FOR MERGE ===============================
-        // Append `?ff=1` to the viewer URL to compare this configuration
-        // against `disableFontFace: true` on the SAME device, browser and zoom.
-        //
-        //   no ?ff=1   pdf.js registers each embedded font via @font-face and
-        //               the BROWSER shapes the text and supplies the advances.
-        //   ?ff=1      pdf.js converts glyphs to path commands itself, so
-        //               outlines and advances are identical on every device.
-        //
-        // Default behaviour is unchanged: without the query parameter this is
-        // byte-for-byte the object that shipped in production.
-        const usePathFonts =
-          typeof window !== 'undefined' &&
-          new URLSearchParams(window.location.search).get('ff') === '1';
-
-        const doc = await pdfjs
-          .getDocument({
-            url,
-            withCredentials: false,
-            ...pdfjsAssetOptions(),
-            ...(usePathFonts ? { disableFontFace: true } : {}),
-          })
-          .promise;
+        // Every PDF.js option for this viewer lives in lib/pdfjs-document.ts, so the
+        // rendering configuration is testable and cannot drift. `disableFontFace: true`
+        // is load-bearing - see the note there.
+        const doc = await pdfjs.getDocument(pdfjsDocumentOptions(url)).promise;
         if (cancelled) return;
 
-        // Records which mode actually ran, so the tester never has to rely on
-        // memory when comparing screenshots.
-        host.dataset.pdfFontMode = usePathFonts ? 'paths' : 'fontface';
 
         host.replaceChildren();
         setPages(doc.numPages);
