@@ -7,6 +7,11 @@
 /.next/
 /out/
 
+# pdf.js font + CMap data, copied out of node_modules/pdfjs-dist at build time
+# by scripts/copy-pdfjs-assets.mjs. Vendoring these would let them drift from the
+# installed library version.
+/public/pdfjs/
+
 # production
 /build
 

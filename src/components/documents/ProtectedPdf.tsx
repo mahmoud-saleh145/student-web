@@ -3,6 +3,7 @@
 import * as React from 'react';
 
 import { burnWatermark } from '@/components/protection/Watermark';
+import { pdfjsAssetOptions } from '@/lib/pdfjs-assets';
 import { useTranslation } from '@/lib/session-context';
 
 /**
@@ -45,7 +46,16 @@ export function ProtectedPdf({ url, watermark }: { url: string; watermark: strin
         // No credentials: the URL is bound to this viewer by its signature, and
         // asking for credentials on a cross-origin read would demand a stricter
         // CORS contract from the edge for no gain.
-        const doc = await pdfjs.getDocument({ url, withCredentials: false }).promise;
+        //
+        // `pdfjsAssetOptions` is REQUIRED, not an optimisation. pdf.js fetches
+        // standard-font metrics and CMaps at runtime; without these URLs it
+        // warns ("Ensure that the `standardFontDataUrl` API parameter is
+        // provided."), keeps going, and draws text with substitute advances -
+        // so glyphs overlap and words merge while the page looks like a
+        // corrupted document. See src/lib/pdfjs-assets.ts.
+        const doc = await pdfjs
+          .getDocument({ url, withCredentials: false, ...pdfjsAssetOptions() })
+          .promise;
         if (cancelled) return;
 
         host.replaceChildren();

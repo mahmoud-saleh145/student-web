@@ -89,7 +89,7 @@ const en = {
   "validation.fullNameParts": "Please enter at least three parts of your name",
   "validation.fullNameChars": "Name may only contain letters and spaces",
   "validation.phoneInvalid": "Enter a valid phone number",
-  "validation.passwordMin": "Password must be at least {count} characters",
+  "validation.passwordMin": "Password must be at least 8 characters",
   "validation.passwordUpper": "Include at least one uppercase letter",
   "validation.passwordLower": "Include at least one lowercase letter",
   "validation.passwordDigit": "Include at least one number",
