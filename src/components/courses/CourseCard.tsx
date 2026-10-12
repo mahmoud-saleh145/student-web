@@ -46,9 +46,9 @@ export function CourseCard({ course, layout = 'grid' }: { course: CourseSummary;
       </div>
       <div className="p-4">
         <h3 className="clamp-2 text-sm font-semibold leading-snug">{title}</h3>
-        <p className="mt-1 truncate text-xs text-muted">
-          {course.teacher.fullName} · {course.lessonCount} {t('lesson.lesson')} ·{' '}
-          {formatDuration(course.totalDurationSeconds, language)}
+        <p className="mt-1 truncate text-xs text-muted">{course.teacher.fullName}</p>
+        <p className="mt-0.5 truncate text-xs text-muted">
+          {course.lessonCount} {t('lesson.lesson')} · {formatDuration(course.totalDurationSeconds, language)}
         </p>
         <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3">
           <span className="min-w-0">
