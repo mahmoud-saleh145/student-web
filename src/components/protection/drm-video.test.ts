@@ -225,6 +225,44 @@ it('still refuses to play without a licence or a manifest', () => {
     );
   });
 
+  it('disables in-band PSSH parsing on the FAIRPLAY path only', () => {
+    // THE fix for MEDIA_3. Gumlet's HLS carries two #EXT-X-KEY lines: a
+    // Widevine CENC PSSH (data: URI, urn:uuid:edef8ba9) and the FairPlay
+    // skd:// entry. Shaka registers its `encrypted`-event handler - the only
+    // route to the skd:// init data - only when in-band PSSH parsing is off:
+    //
+    //   if (!initData.length && !queued && !parseInbandPsshEnabled) {...}
+    //
+    // With it on, Shaka requests a licence for the Widevine PSSH instead, the
+    // Apple CDM never gets a FairPlay content id, and the track fails to
+    // decrypt (MediaError.code 3).
+    assert.match(
+      code,
+      /isFairPlay \? \{ parseInbandPsshEnabled: false \} : \{\}/,
+      'FairPlay must disable parseInbandPsshEnabled',
+    );
+
+    // It must stay scoped. Widevine DASH REQUIRES in-band PSSH; disabling it
+    // globally would silently break every Chrome/Edge/Android video.
+    const globalCount = (code.match(/parseInbandPsshEnabled\s*:\s*false/g) ?? []).length;
+    assert.equal(globalCount, 1, 'exactly one site may disable it, and it must be conditional');
+    assert.doesNotMatch(
+      code,
+      /drm:\s*\{\s*parseInbandPsshEnabled/,
+      'parseInbandPsshEnabled must never be set unconditionally at the drm root',
+    );
+  });
+
+  it('reports whether the element announced encrypted media', () => {
+    // The discriminator for the whole diagnosis: if ENC_* never appears, the
+    // licence exchange that produced LIC_REQ cannot have come from FairPlay
+    // signalling. Observe-only - initData is key-adjacent and must not be read.
+    const fpBranch = code.slice(code.indexOf('if (isFairPlay) {'));
+    assert.match(fpBranch.slice(0, 900), /addEventListener\('encrypted'/);
+    assert.match(code, /ENC_\$\{type \|\| 'NONE'\}/);
+    assert.doesNotMatch(code, /initData\s*as\s*Uint8Array/);
+  });
+
   it('decodes the MediaError on the load() rejection path too', () => {
     // The native-HLS path reports a media failure by REJECTING load(), so the
     // catch block is where MediaError.code lives on the path that is supposed

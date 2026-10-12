@@ -209,6 +209,41 @@ export default function DrmVideo({
 
       player.configure({
         drm: {
+          // FairPlay ONLY - see below. Left at its default for every other key
+          // system, because Widevine DASH depends on in-band PSSH parsing.
+          //
+          // WHY, for FairPlay only.
+          //
+          // Gumlet's HLS media playlist carries TWO `#EXT-X-KEY` lines: a
+          // Widevine CENC PSSH as a `data:text/plain;base64,...` URI under
+          // `KEYFORMAT="urn:uuid:edef8ba9-..."`, and the FairPlay entry under
+          // `KEYFORMAT="com.apple.streamingkeydelivery"` with an `skd://` URI.
+          // Both are `METHOD=SAMPLE-AES` over CMAF (`#EXT-X-MAP` present).
+          //
+          // Shaka's DRM engine registers its handler for the <video> element's
+          // `encrypted` event - the ONLY thing that delivers the `skd://` init
+          // data the Apple CDM needs to derive a content id - under exactly
+          // this condition:
+          //
+          //     if (!drmInfo.initData.length && !queuedInitData &&
+          //         !config.parseInbandPsshEnabled) { listenFor('encrypted') }
+          //
+          // With in-band PSSH parsing on, that handler is never registered.
+          // Shaka instead takes the PSSH out of the CMAF init segment, requests
+          // a licence for it, gets an HTTP answer, and installs a CKC the Apple
+          // CDM cannot use for these segments: the track never decrypts and the
+          // element reports MediaError.code 3.
+          //
+          // The observable signature of that state is a licence exchange with
+          // NO `IDT_*` marker - `drm.initDataTransform` above marks on entry,
+          // and it is only ever reached from the `encrypted` handler. That is
+          // what the reported trace showed.
+          //
+          // This removes the Widevine PSSH from consideration on the FairPlay
+          // path ONLY. It grants no access and disables no protection: the same
+          // signed manifest, the same licence server and certificate, the same
+          // key systems and the same entitlement checks all still apply.
+          ...(isFairPlay ? { parseInbandPsshEnabled: false } : {}),
           servers: isFairPlay
             ? { [fairplay]: drm.licenseUrl, [fairplayLegacy]: drm.licenseUrl }
             : { [widevine]: drm.licenseUrl },
@@ -271,6 +306,24 @@ export default function DrmVideo({
       });
 
       if (isFairPlay) {
+        // Whether the element ever announced encrypted media at all.
+        //
+        // This is the discriminator the whole diagnosis turns on. Safari only
+        // fires `encrypted` once it has actually found encrypted content AND
+        // EME is live on the element; Shaka's `encrypted` handler - the only
+        // route to the `skd://` init data, and therefore to `IDT_*` and a
+        // usable FairPlay content id - is registered behind the same conditions
+        // described above. If `ENC_*` is absent the licence exchange that
+        // produced LIC_REQ cannot have come from FairPlay signalling.
+        //
+        // Observes only. Nothing about the event is modified, and `initData` is
+        // deliberately never read: it is key-adjacent material. Only the fixed
+        // `initDataType` string is reported, which is a constant per spec.
+        video?.addEventListener('encrypted', (event: Event) => {
+          const type = (event as Event & { initDataType?: string }).initDataType;
+          mark(`ENC_${type || 'NONE'}`);
+        });
+
         // Gumlet's licence server speaks JSON: it wants {"spc": "<base64>"} and
         // answers {"ckc": "<base64>"}. Shaka's generic FairPlay contract (and
         // shaka.util.FairPlayUtils.commonFairPlayResponse, which implements it)
