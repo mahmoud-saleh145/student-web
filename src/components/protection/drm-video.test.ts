@@ -157,37 +157,36 @@ it('still refuses to play without a licence or a manifest', () => {
     assert.match(DrmVideo, /if \(!manifestUrl\)/);
   });
 
-  it('never attaches MSE on the FairPlay path - that is the MEDIA_3 regression', () => {
-    // `player.attach()` moves the media element under Media Source Extensions
-    // control. Shaka supports FairPlay ONLY through native `src=` playback, so
-    // calling attach() unconditionally disabled the only supported FairPlay path
-    // on the only platform with no alternative CDM. The symptom was a DECODE
-    // failure (MediaError.code 3) AFTER a successful licence exchange.
+  it('ALWAYS attaches the media element, including on the native FairPlay path', () => {
+    // This is the DRM_PLAYBACK_NO_VIDEO_ELEMENT regression.
     //
-    // This asserts the ordering rather than the presence of attach(): attach()
-    // must exist for the Widevine path, and must be unreachable for FairPlay.
-    const usesNativeFlag = /const useNativeHls\s*=\s*needsNativeFairPlayHls/.test(code);
+    // In shaka-player 4.11.7 the player's internal media element (`c.h`) is
+    // assigned ONLY inside attach(), and `load()` opens with
+    // `if (!d.h) throw new T(2, 7, 7002)` - CONTENT.NO_VIDEO_ELEMENT. So an
+    // unguarded-by-opposite `attach()` is not "switching MSE on": skipping it
+    // makes EVERY load() throw before a single manifest request is made.
+    //
+    // attach() must therefore be unconditional. `preferNativeHls` is what routes
+    // the load to Safari's native engine instead of MSE.
+    const guardedAttach = /if\s*\(\s*!useNativeHls\s*\)\s*\{[^}]*player\.attach\(video\)/.test(code);
     assert.ok(
-      usesNativeFlag,
-      'component must derive the native-HLS decision from the tested helper',
+      !guardedAttach,
+      'player.attach() must NOT be conditional on useNativeHls: Shaka load() throws CONTENT.NO_VIDEO_ELEMENT (7002) without it',
     );
 
-    const guardedAttach = /if\s*\(\s*!useNativeHls\s*\)\s*\{\s*await player\.attach\(video\);\s*\}/.test(
-      code,
-    );
-    assert.ok(
-      guardedAttach,
-      'player.attach() must be guarded by !useNativeHls; an unconditional attach is the MEDIA_3 cause',
-    );
-
-    // The helper must be consulted, not a hardcoded 'ios' check.
-    assert.match(code, /needsNativeFairPlayHls/);
-    assert.doesNotMatch(code, /userAgent|navigator\.platform/);
+    // Present, and not inside any conditional.
+    assert.match(code, /await player\.attach\(video\)/);
   });
 
-  it('configures preferNativeHls so Shaka hands HLS to Safari', () => {
+  it('configures preferNativeHls so Shaka hands HLS to Safari rather than MSE', () => {
+    // Shaka does not support FairPlay through MSE at all
+    // (shaka-project/shaka-player#2096). preferNativeHls is what selects the
+    // supported native route; attach() alone would use MSE and fail to decode
+    // cbcs (the earlier MEDIA_3).
     assert.match(code, /streamingConfigForNativeHls\(\)/);
     assert.match(code, /player\.configure\(streamingConfigForNativeHls\(\)\)/);
+    // And it is set on the native path specifically.
+    assert.match(code, /if\s*\(useNativeHls\)\s*\{\s*mark\('NATIVE_HLS'\);\s*player\.configure/);
   });
 
   it('keeps both FairPlay key systems and the certificate on the native path', () => {
@@ -205,17 +204,18 @@ it('still refuses to play without a licence or a manifest', () => {
     assert.match(code, /player\.load\(manifestUrl\)/);
   });
 
-  it('wires media events from the real element when there is no MSE attachment', () => {
-    // getMediaElement() resolves only an attached element; on the native path
-    // it would be null and playback telemetry would silently stop on iOS.
-    assert.match(code, /useNativeHls\s*\?\s*video\s*:\s*\(player\.getMediaElement\(\)/);
+  it('reads media events from the attached element on every path', () => {
+    assert.match(code, /const mediaElement = player\.getMediaElement\(\) \?\? video;/);
   });
 
-  it('skips addTextTrackAsync on the native path where it cannot exist', () => {
-    assert.match(code, /!useNativeHls\s*&&\s*captionsEnabled/);
+  it('keeps captions available, since the player is always attached', () => {
+    // Guarding this on useNativeHls would silently drop subtitles on iOS now
+    // that attach() is unconditional again.
+    assert.doesNotMatch(code, /!useNativeHls\s*&&\s*captionsEnabled/);
+    assert.match(code, /if \(captionsEnabled && captions\.length > 0\)/);
   });
 
-  it('keeps the existing cleanup safe for an unattached player', () => {
+  it('keeps the existing cleanup safe', () => {
     assert.match(code, /destroy\(\)\.catch\(\(\)\s*=>\s*undefined\)/);
   });
 
