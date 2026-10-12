@@ -708,12 +708,14 @@ export function Breadcrumbs({ items }: { items: Crumb[] }) {
           {item.href && i < items.length - 1 ? (
             <Link
               href={item.href}
-              className="rounded transition hover:text-foreground hover:underline"
+              className="min-w-0 max-w-full truncate rounded transition hover:text-foreground hover:underline"
             >
               {item.label}
             </Link>
           ) : (
-            <span className="font-semibold text-foreground">{item.label}</span>
+            <span className="min-w-0 max-w-full flex-1 truncate font-semibold text-foreground">
+              {item.label}
+            </span>
           )}
         </React.Fragment>
       ))}
@@ -755,7 +757,7 @@ export function PageHeader({
           </button>
         ) : null}
         <div className="min-w-0 flex-1">
-          <h1 className="text-2xl font-bold tracking-tight sm:text-[28px]">
+          <h1 className="text-2xl font-bold tracking-tight break-words sm:text-[28px]">
             {title}
           </h1>
           {subtitle ? (
