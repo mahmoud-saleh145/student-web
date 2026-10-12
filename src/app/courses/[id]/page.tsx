@@ -251,7 +251,21 @@ export default function CourseDetailPage() {
           </div>
         </div>
 
-        <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
+        {/* `min-w-0` mirrors the main column above and is load-bearing.
+
+            A grid item's `min-width` defaults to `auto`, which makes its
+            automatic minimum size its min-content width. The curriculum in
+            here contains lesson titles, and although each row truncates, that
+            only stops a title overflowing its OWN row — the row still reports
+            its full min-content, and that propagates up through the block
+            ancestors to this element.
+
+            On mobile the two columns stack into one implicit `auto` track, so
+            that minimum becomes the track's size: a course with a long lesson
+            title pushed the track to its min-content and dragged `main` past
+            the viewport, scrolling the whole page sideways. Above `lg` the
+            track is pinned to 340px, so this changes nothing on desktop. */}
+        <aside className="min-w-0 space-y-4 lg:sticky lg:top-20 lg:self-start">
           <EnrollmentCard course={course} onJoin={() => setJoinOpen(true)} onContinue={continueLearning} />
 
           <Card>
