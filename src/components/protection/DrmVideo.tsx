@@ -27,6 +27,18 @@ import {
   traceInitDataTransform,
   videoErrorDetail,
 } from '@/lib/fairplay';
+import {
+  DEFAULT_FAIRPLAY_DIAG_FLAGS,
+  appendTraceEvent,
+  fairPlayConfigTokens,
+  fairPlayKeySystems,
+  formatTrace,
+  keySystemToken,
+  licenceHttpStatusFromError,
+  nativeErrorDomainCode,
+  parseFairPlayDiagFlags,
+  type TraceEntry,
+} from '@/lib/drm-diagnostics';
 
 /**
  * DRM video playback for Gumlet-backed lessons.
@@ -102,11 +114,35 @@ export default function DrmVideo({
   // Ordered, sanitised trace of how far playback actually got. A single error
   // code cannot say whether the licence was ever requested, and that is the one
   // thing that separates a FairPlay contract failure from a media-layer failure.
-  // Every token here is a fixed literal or a MediaError number.
-  const [trace, setTrace] = React.useState<string[]>([]);
+  // Every token here is a fixed literal, a small integer, or a pattern-checked
+  // identifier (lib/drm-diagnostics.ts). Each carries the ms since this player
+  // effect started, and a repeat count, so timing and duplicate events (e.g. a
+  // second `encrypted` event) are visible rather than inferred from ordering.
+  const [trace, setTrace] = React.useState<TraceEntry[]>([]);
+  const traceStartRef = React.useRef(0);
   const mark = React.useCallback((token: string) => {
-    setTrace((prev) => (prev.includes(token) ? prev : [...prev, token]));
+    const atMs = performance.now() - traceStartRef.current;
+    setTrace((prev) => appendTraceEvent(prev, token, atMs));
   }, []);
+
+  /**
+   * Safe snapshot of the media element: whether MediaKeys were attached at that
+   * moment and, on failure, Safari's native error domain/code (never the
+   * message text), readyState and networkState.
+   */
+  const markMediaState = React.useCallback(
+    (where: 'ERR' | 'ENC') => {
+      const element = videoRef.current;
+      if (!element) return;
+      mark(`MK_AT_${where}_${element.mediaKeys ? 1 : 0}`);
+      if (where === 'ERR') {
+        const native = nativeErrorDomainCode(element.error?.message);
+        if (native) mark(`NERR_${native}`);
+        mark(`RS_${element.readyState}_NS_${element.networkState}`);
+      }
+    },
+    [mark],
+  );
 
   /**
    * Which engine Shaka actually chose.
@@ -138,6 +174,9 @@ export default function DrmVideo({
   React.useEffect(() => {
     let disposed = false;
     let video: HTMLVideoElement | null = null;
+
+    traceStartRef.current = performance.now();
+    setTrace([]);
 
     (async () => {
       if (!videoRef.current) return;
@@ -172,11 +211,21 @@ export default function DrmVideo({
       video = videoRef.current;
 
       const widevine = 'com.widevine.alpha';
-      const fairplay = 'com.apple.fps';
-      // Legacy Apple Media Keys. Which of the two a manifest yields depends on
-      // its signalling, so both get a licence server and the certificate.
-      const fairplayLegacy = 'com.apple.fps.1_0';
       const isFairPlay = drm.scheme === 'fairplay';
+      // Diagnostic experiments (lib/drm-diagnostics.ts). OFF unless the page URL
+      // carries exactly `fpks=1_0` or `fpcors=0`, and FairPlay-only: a
+      // Widevine ticket never reads them. With no flag the FairPlay key systems
+      // are `com.apple.fps` then `com.apple.fps.1_0`, both with a licence
+      // server and the certificate - the production configuration.
+      const diag = isFairPlay
+        ? parseFairPlayDiagFlags(typeof window === 'undefined' ? '' : window.location.search)
+        : DEFAULT_FAIRPLAY_DIAG_FLAGS;
+      const fairPlayKeySystemList = fairPlayKeySystems(diag);
+      if (isFairPlay) {
+        for (const token of fairPlayConfigTokens(diag)) mark(token);
+        // `fpcors=0`: drop the attribute before Shaka assigns any source.
+        if (diag.omitCrossOrigin) video.removeAttribute('crossorigin');
+      }
 
       // FairPlay on Safari: use the native HLS engine.
       //
@@ -284,10 +333,10 @@ export default function DrmVideo({
           // FairPlay signalling arrives via the `encrypted` event. FairPlay
           // ONLY - Widevine must keep its own ordering untouched.
           ...(isFairPlay
-            ? { preferredKeySystems: [fairplay, fairplayLegacy] }
+            ? { preferredKeySystems: fairPlayKeySystemList }
             : {}),
           servers: isFairPlay
-            ? { [fairplay]: drm.licenseUrl, [fairplayLegacy]: drm.licenseUrl }
+            ? Object.fromEntries(fairPlayKeySystemList.map((ks) => [ks, drm.licenseUrl]))
             : { [widevine]: drm.licenseUrl },
           advanced: {
             // Requested robustness only. No SW fallback: a software-only CDM
@@ -301,10 +350,9 @@ export default function DrmVideo({
             // 'drm.advanced.com.apple.fps.serverCertificateUri' would split the
             // key-system name at its dots and never reach the key system.
             ...(isFairPlay && drm.certificateUrl
-              ? {
-                  [fairplay]: { serverCertificateUri: drm.certificateUrl },
-                  [fairplayLegacy]: { serverCertificateUri: drm.certificateUrl },
-                }
+              ? Object.fromEntries(
+                  fairPlayKeySystemList.map((ks) => [ks, { serverCertificateUri: drm.certificateUrl }]),
+                )
               : {}),
           },
           // FairPlay ONLY, at the `drm` level (Shaka 4.11.7 reads
@@ -344,7 +392,15 @@ export default function DrmVideo({
         video?.addEventListener('encrypted', (event: Event) => {
           const type = (event as Event & { initDataType?: string }).initDataType;
           mark(`ENC_${type || 'NONE'}`);
+          // Registered before Shaka's own listener, so this is the state Safari
+          // had when it announced encrypted media.
+          markMediaState('ENC');
         });
+        // Safari is stalled waiting for a key (observe only).
+        video?.addEventListener('waitingforkey', () => mark('WAIT_KEY'));
+        // Shaka fires this only after `session.update(ckc)` RESOLVED - i.e. the
+        // CDM accepted the licence. An HTTP response alone (LIC_RES) is not that.
+        player.addEventListener('drmsessionupdate', () => mark('LIC_OK'));
 
         // Gumlet's licence server speaks JSON: it wants {"spc": "<base64>"} and
         // answers {"ckc": "<base64>"}. Shaka's generic FairPlay contract (and
@@ -369,6 +425,7 @@ export default function DrmVideo({
         ne.registerResponseFilter((type, response) => {
           if (type !== shaka.net.NetworkingEngine.RequestType.LICENSE) return;
           mark('LIC_RES');
+          if (typeof response.status === 'number') mark(`LIC_HTTP_${response.status}`);
           response.data = parseFairPlayLicenseResponse(response.data);
         });
       } else {
@@ -418,6 +475,10 @@ export default function DrmVideo({
         // message]; we read the two NUMBERS and never the message.
         const media = videoErrorDetail(detail);
         if (media) mark(`MEDIA_${media.code}${media.ext ? '_' + media.ext : ''}`);
+        if (media) markMediaState('ERR');
+        const licenceHttp = licenceHttpStatusFromError(detail);
+        if (licenceHttp) mark(`LIC_HTTP_${licenceHttp}`);
+        mark(`KS_${keySystemToken(player.keySystem())}`);
         // Record the route on failure too - this is where it matters most, and
         // a run that never reached LOADED has no other route evidence.
         markRoute();
@@ -451,6 +512,8 @@ export default function DrmVideo({
           data: (e as { data?: unknown })?.data,
         });
         if (media) mark(`MEDIA_${media.code}${media.ext ? '_' + media.ext : ''}`);
+        if (media) markMediaState('ERR');
+        mark(`KS_${keySystemToken(player.keySystem())}`);
         setFatal(
           fpStage
             ? `Protected playback failed (${fpStage}). Please reload the lesson.`
@@ -467,6 +530,7 @@ export default function DrmVideo({
       if (disposed) return;
       mark('LOADED');
       markRoute();
+      mark(`KS_${keySystemToken(player.keySystem())}`);
 
       // Backstop for the media layer. Shaka raises VIDEO_ERROR from the same
       // signal, but a native-source failure can reach the element without it, and
@@ -476,6 +540,7 @@ export default function DrmVideo({
       video?.addEventListener('error', () => {
         const err = video?.error;
         mark(`MEDIA_${err ? err.code : 'X'}`);
+        markMediaState('ERR');
       });
 
       // Track-level discriminator. MediaError.code cannot say WHICH track
@@ -521,7 +586,7 @@ export default function DrmVideo({
       }
       void video;
     };
-  }, [manifestUrl, drm.scheme, drm.licenseUrl, drm.certificateUrl, captionsEnabled, captions, mark]);
+  }, [manifestUrl, drm.scheme, drm.licenseUrl, drm.certificateUrl, captionsEnabled, captions, mark, markMediaState]);
 
   return (
     <div ref={undefined} className="relative mx-auto w-full max-w-5xl" data-protected>
@@ -550,10 +615,10 @@ export default function DrmVideo({
           ) : null}
           {trace.length ? (
             <p
-              data-drm-trace={trace.join('>')}
+              data-drm-trace={formatTrace(trace, '>')}
               className="max-w-md font-mono text-[10px] tracking-wider text-white/35 select-none"
             >
-              {trace.join(' > ')}
+              {formatTrace(trace, ' > ')}
             </p>
           ) : null}
           <p className="max-w-md text-[11px] text-white/40">

@@ -113,12 +113,30 @@ describe('DrmVideo Shaka wiring', () => {
     assert.match(code, /IDT_\$\{initDataType/);
   });
 
-  it('configures both FairPlay key-system names', () => {
-    // Safari negotiates com.apple.fps (Modern EME) or com.apple.fps.1_0
-    // (legacy Apple Media Keys) depending on the device. Which one applies is
-    // not knowable ahead of a real device, so both carry a licence server.
-    assert.match(code, /com\.apple\.fps/);
-    assert.match(code, /com\.apple\.fps\.1_0/);
+  it('configures the FairPlay key systems from the tested helper', () => {
+    // The list (default: com.apple.fps then com.apple.fps.1_0) lives in
+    // lib/drm-diagnostics.ts and is behaviourally tested there; the component
+    // must use that list for servers, preference order AND certificates.
+    assert.match(code, /const fairPlayKeySystemList = fairPlayKeySystems\(diag\);/);
+    assert.match(code, /preferredKeySystems: fairPlayKeySystemList/);
+    assert.match(code, /fairPlayKeySystemList\.map\(\(ks\) => \[ks, drm\.licenseUrl\]\)/);
+    assert.match(code, /fairPlayKeySystemList\.map\(\(ks\) => \[ks, \{ serverCertificateUri: drm\.certificateUrl \}\]\)/);
+  });
+
+  it('reads the diagnostic flags on the FairPlay branch only', () => {
+    // Widevine tickets must never read the query-string experiments.
+    assert.match(
+      code,
+      /const diag = isFairPlay\s*\?\s*parseFairPlayDiagFlags\([\s\S]{0,80}window\.location\.search\)\s*:\s*DEFAULT_FAIRPLAY_DIAG_FLAGS;/,
+    );
+    // fpcors=0 only removes the attribute, inside the FairPlay guard.
+    assert.match(
+      code,
+      /if \(isFairPlay\) \{\s*for \(const token of fairPlayConfigTokens\(diag\)\) mark\(token\);\s*if \(diag\.omitCrossOrigin\) video\.removeAttribute\('crossorigin'\);\s*\}/,
+      'config tokens and the crossorigin experiment must sit inside the FairPlay guard',
+    );
+    // The element still defaults to crossOrigin="anonymous" - no flag, no change.
+    assert.match(code, /crossOrigin="anonymous"/);
   });
 
   it('reports a sanitised stage code rather than a raw error message', () => {
@@ -157,10 +175,14 @@ describe('DrmVideo Shaka wiring', () => {
 
 it('traces the stages reached so a licence failure is separable', () => {
   // A single error code cannot say whether the licence was ever requested.
-  assert.match(code, /data-drm-trace=\{trace\.join\('>'\)\}/);
+  assert.match(code, /data-drm-trace=\{formatTrace\(trace, '>'\)\}/);
   for (const t of ['MANIFEST', 'LIC_REQ', 'LIC_RES', 'LOADED', 'MEDIA_']) {
     assert.ok(code.includes(t), `missing trace token ${t}`);
   }
+  // Timestamped and counted (lib/drm-diagnostics.ts), with the clock reset at
+  // the start of each player effect.
+  assert.match(code, /setTrace\(\(prev\) => appendTraceEvent\(prev, token, atMs\)\)/);
+  assert.match(code, /traceStartRef\.current = performance\.now\(\);\s*setTrace\(\[\]\);/);
   // The Widevine branch observes the same stages without touching payloads.
   assert.match(code, /registerRequestFilter\(\(type\) => \{/);
 });
@@ -230,7 +252,7 @@ it('still refuses to play without a licence or a manifest', () => {
     );
     const errorHandler = code.slice(code.indexOf("addEventListener('error'"));
     assert.match(
-      errorHandler.slice(0, 1400),
+      errorHandler.slice(0, 2400),
       /markRoute\(\);/,
       'route must be recorded on the failure path too',
     );
@@ -276,12 +298,12 @@ it('still refuses to play without a licence or a manifest', () => {
     // is the control that matters.
     assert.match(
       code,
-      /preferredKeySystems: \[fairplay, fairplayLegacy\]/,
-      'FairPlay must name both FairPlay key systems',
+      /preferredKeySystems: fairPlayKeySystemList/,
+      'FairPlay must name the FairPlay key systems it serves',
     );
     assert.match(
       code,
-      /\?\s*\{\s*preferredKeySystems:\s*\[fairplay,\s*fairplayLegacy\]\s*\}\s*:\s*\{\}/,
+      /\?\s*\{\s*preferredKeySystems:\s*fairPlayKeySystemList\s*\}\s*:\s*\{\}/,
       'preferredKeySystems must be scoped to the FairPlay branch',
     );
 
@@ -301,7 +323,7 @@ it('still refuses to play without a licence or a manifest', () => {
     // in-band parsing off removes the *runtime* PSSH source, naming the key
     // systems removes the *manifest* one. Both are needed.
     assert.match(code, /isFairPlay \? \{ parseInbandPsshEnabled: false \} : \{\}/);
-    assert.match(code, /preferredKeySystems: \[fairplay, fairplayLegacy\]/);
+    assert.match(code, /preferredKeySystems: fairPlayKeySystemList/);
   });
 
   it('installs initDataTransform at the drm LEVEL, not inside `advanced`', () => {
@@ -373,10 +395,35 @@ it('still refuses to play without a licence or a manifest', () => {
     // The discriminator for the whole diagnosis: if ENC_* never appears, the
     // licence exchange that produced LIC_REQ cannot have come from FairPlay
     // signalling. Observe-only - initData is key-adjacent and must not be read.
-    const fpBranch = code.slice(code.indexOf('if (isFairPlay) {'));
+    // The FairPlay branch that registers the observers is the one that sits
+    // after the player has been configured.
+    const fpBranch = code.slice(code.indexOf('if (isFairPlay) {', code.indexOf('player.configure({')));
     assert.match(fpBranch.slice(0, 900), /addEventListener\('encrypted'/);
     assert.match(code, /ENC_\$\{type \|\| 'NONE'\}/);
     assert.doesNotMatch(code, /initData\s*as\s*Uint8Array/);
+    // Never read the event's init data, even for diagnostics.
+    assert.doesNotMatch(code, /event as Event & \{ initData\??:/);
+    assert.doesNotMatch(code, /\)\.initData\b(?!Type)/);
+  });
+
+  it('records key-related events without treating an HTTP response as acceptance', () => {
+    // LIC_OK only from Shaka's drmsessionupdate (fired after session.update
+    // resolved); LIC_RES remains "a response arrived".
+    assert.match(code, /player\.addEventListener\('drmsessionupdate', \(\) => mark\('LIC_OK'\)\)/);
+    assert.match(code, /addEventListener\('waitingforkey', \(\) => mark\('WAIT_KEY'\)\)/);
+    assert.match(code, /markMediaState\('ENC'\)/);
+    assert.match(code, /KS_\$\{keySystemToken\(player\.keySystem\(\)\)\}/);
+    // Licence HTTP status: a number, from the response or the error detail.
+    assert.match(code, /if \(typeof response\.status === 'number'\) mark\(`LIC_HTTP_\$\{response\.status\}`\)/);
+    assert.match(code, /licenceHttpStatusFromError\(detail\)/);
+  });
+
+  it('records the native media error only as a sanitised domain/code', () => {
+    // The raw MediaError.message may quote a URL; only the helper's output may
+    // reach the trace.
+    assert.match(code, /nativeErrorDomainCode\(element\.error\?\.message\)/);
+    assert.doesNotMatch(code, /mark\([^)]*\.message/);
+    assert.match(code, /RS_\$\{element\.readyState\}_NS_\$\{element\.networkState\}/);
   });
 
   it('decodes the MediaError on the load() rejection path too', () => {
@@ -392,7 +439,7 @@ it('still refuses to play without a licence or a manifest', () => {
     // Native playback still needs a licence server and a certificate: the EME
     // exchange is unchanged, only the demux path differs. Losing either here
     // would reintroduce a licence failure instead of fixing the decode one.
-    assert.match(code, /\[fairplay\]:\s*drm\.licenseUrl/);
+    assert.match(code, /\[ks, drm\.licenseUrl\]/);
     assert.match(code, /serverCertificateUri:\s*drm\.certificateUrl/);
   });
 
