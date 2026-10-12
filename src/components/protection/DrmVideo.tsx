@@ -23,7 +23,7 @@ import { Watermark } from '@/components/protection/Watermark';
 import {
   buildFairPlayLicenseRequest,
   createFairPlayInitDataTransform,
-  fairPlayStageFromMessage,
+  fairPlayStageFromErrorDetail,
   parseFairPlayLicenseResponse,
   videoErrorDetail,
 } from '@/lib/fairplay';
@@ -450,7 +450,7 @@ export default function DrmVideo({
         // Our own init-data failures carry a stage tag so the failing step is
         // identifiable in production. Only the tag is emitted - never the
         // surrounding message, which could quote a URL or payload.
-        const fpStage = fairPlayStageFromMessage(detail?.message);
+        const fpStage = fairPlayStageFromErrorDetail(detail);
         // VIDEO_ERROR (3016) is raised only from the <video> element's error by
         // StreamingEngine, which runs after DRM init and after the licence
         // exchange. Its payload is [code, MediaError.code, msExtendedCode,
@@ -477,7 +477,9 @@ export default function DrmVideo({
         if (disposed) return;
         const code = (e as { code?: number })?.code;
         const name = code ? (Object.entries(shaka.util.Error.Code).find(([, v]) => v === code)?.[0] ?? 'UNKNOWN') : 'UNKNOWN';
-        const fpStage = fairPlayStageFromMessage((e as { message?: unknown })?.message);
+        const fpStage = fairPlayStageFromErrorDetail(
+          e as { message?: unknown; data?: unknown },
+        );
         // The native-HLS path reports a media failure by REJECTING load() with
         // the same VIDEO_ERROR (3016) Shaka's error event carries, so this catch
         // is where MediaError.code lives on exactly the path that is supposed to

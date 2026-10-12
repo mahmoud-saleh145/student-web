@@ -130,7 +130,22 @@ describe('DrmVideo Shaka wiring', () => {
     // must be a stable code. It must never carry a URL, token or payload.
     assert.match(code, /onError\?\.\(/);
     assert.match(code, /DRM_FAIRPLAY_/);
-    assert.match(code, /fairPlayStageFromMessage/);
+    // Both error paths must read the stage from the WHOLE detail, not just
+    // `message`: Shaka hardcodes `message` to 'Shaka Error <code>' and keeps
+    // the thrown text in `data[0]`, so reading only `message` reported the
+    // generic INIT_DATA_TRANSFORM_ERROR instead of the guard that threw.
+    assert.match(code, /fairPlayStageFromErrorDetail/);
+    assert.doesNotMatch(
+      code,
+      /fairPlayStageFromMessage\(/,
+      'reading only detail.message loses the stage entirely',
+    );
+
+    // Both the error event and the load() rejection must use it.
+    const handler = code.slice(code.indexOf("addEventListener('error'"));
+    assert.match(handler.slice(0, 2000), /fairPlayStageFromErrorDetail\(detail\)/);
+    const catchBlock = code.slice(code.indexOf('} catch (e) {'));
+    assert.match(catchBlock.slice(0, 2000), /fairPlayStageFromErrorDetail\(/);
   });
 
   it('shows the stage code on screen, not only in the console', () => {

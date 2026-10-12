@@ -254,6 +254,46 @@ export function fairPlayStageFromMessage(message: unknown): string | null {
   return code ? `FP_${code[1]}` : null;
 }
 
+/**
+ * Recover the FairPlay stage from a Shaka error, wherever Shaka put it.
+ *
+ * Shaka's `util.Error` builds its own message and hardcodes it:
+ *
+ *   this.message = 'Shaka Error ' + this.code;
+ *
+ * so `message` carries the CODE and nothing else - never the text of whatever
+ * was thrown. When our own `drm.initDataTransform` throws, Shaka wraps it:
+ *
+ *   catch (e) { err = e instanceof T ? e : new T(SEVERITY, 6, 6016, e) }
+ *
+ * and the tagged message survives only inside `data[0]`.
+ *
+ * That made `fairPlayStageFromMessage(detail.message)` return null for exactly
+ * the failure it exists to explain: the stage rendered as the generic
+ * `INIT_DATA_TRANSFORM_ERROR` (6016) while the reason - no `skd://` URI, no
+ * server certificate, no content id - was silently discarded. Every guard in
+ * `createFairPlayInitDataTransform` throws in order precisely so the failing one
+ * can be named, and this is where that name is read back.
+ *
+ * Only the fixed `[A-Z_]+` token after our own prefix is ever returned; the
+ * surrounding text is never propagated, since it could quote a URI.
+ */
+export function fairPlayStageFromErrorDetail(detail: {
+  code?: unknown;
+  message?: unknown;
+  data?: unknown;
+} | null | undefined): string | null {
+  const direct = fairPlayStageFromMessage(detail?.message);
+  if (direct) return direct;
+  const data = detail?.data;
+  if (!Array.isArray(data)) return null;
+  for (const item of data) {
+    const stage = fairPlayStageFromMessage(item);
+    if (stage) return stage;
+  }
+  return null;
+}
+
 /** The slice of `shaka.extern.DrmInfo` this module reads. */
 export type FairPlayDrmInfo = {
   keySystemUris?: Set<string> | null;

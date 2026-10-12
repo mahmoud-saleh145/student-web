@@ -5,6 +5,7 @@ import {
   buildFairPlayLicenseRequest,
   contentIdFromSkdUri,
   createFairPlayInitDataTransform,
+  fairPlayStageFromErrorDetail,
   fairPlayStageFromMessage,
   findSkdUri,
   fromBase64,
@@ -385,6 +386,60 @@ describe('FairPlay failure stage tagging', () => {
  * refusal from anything DRM-related: 1 ABORTED, 2 NETWORK, 3 DECODE,
  * 4 SRC_NOT_SUPPORTED.
  */
+describe('stage recovery from a Shaka error detail', () => {
+  // Shaka's util.Error hardcodes `this.message = 'Shaka Error ' + this.code`,
+  // so `message` never contains what was thrown. When our initDataTransform
+  // throws, Shaka wraps it as `new T(2, 6, 6016, thrownError)` - the tagged
+  // text survives only at data[0]. That is the shape the deployed trace took:
+  // `ERR_INIT_DATA_TRANSFORM_ERROR`, with the real stage discarded.
+  it('reads the stage from data[0] when message is only the code', () => {
+    const thrown = new Error('[drm-fp]NO_SKD_URI: FairPlay init data carried no skd:// URI');
+    const detail = { code: 6016, message: 'Shaka Error 6016', data: [thrown] };
+    assert.equal(fairPlayStageFromErrorDetail(detail), 'FP_NO_SKD_URI');
+  });
+
+  it('recovers every guard the transform can throw', () => {
+    for (const stage of ['NO_SKD_URI', 'NO_CERTIFICATE', 'NO_SKD_CONTENT_ID']) {
+      const thrown = new Error(`[drm-fp]${stage}: detail that must never be emitted`);
+      const detail = { code: 6016, message: 'Shaka Error 6016', data: [thrown] };
+      assert.equal(fairPlayStageFromErrorDetail(detail), `FP_${stage}`, `must recover FP_${stage}`);
+    }
+  });
+
+  it('still prefers a stage that IS on the message', () => {
+    const detail = {
+      message: '[drm-fp]NO_CERTIFICATE: none was fetched',
+      data: [new Error('[drm-fp]NO_SKD_URI: other')],
+    };
+    assert.equal(fairPlayStageFromErrorDetail(detail), 'FP_NO_CERTIFICATE');
+  });
+
+  it('REGRESSION: message alone yields nothing, which is why the trace was useless', () => {
+    assert.equal(fairPlayStageFromMessage('Shaka Error 6016'), null);
+    assert.equal(fairPlayStageFromErrorDetail({ message: 'Shaka Error 6016' }), null);
+  });
+
+  it('never leaks the wrapped message text', () => {
+    const thrown = new Error('[drm-fp]NO_SKD_URI: see https://video.gumlet.io/private/path');
+    const stage = fairPlayStageFromErrorDetail({
+      code: 6016,
+      message: 'Shaka Error 6016',
+      data: [thrown],
+    });
+    assert.ok(stage);
+    assert.doesNotMatch(stage, /https?:|gumlet|private/);
+  });
+
+  it('is defensive about malformed details', () => {
+    assert.equal(fairPlayStageFromErrorDetail(null), null);
+    assert.equal(fairPlayStageFromErrorDetail(undefined), null);
+    assert.equal(fairPlayStageFromErrorDetail({}), null);
+    assert.equal(fairPlayStageFromErrorDetail({ data: 'nope' }), null);
+    assert.equal(fairPlayStageFromErrorDetail({ data: [null, 42, {}] }), null);
+    assert.equal(fairPlayStageFromErrorDetail({ data: [{ message: 'unrelated' }] }), null);
+  });
+});
+
 describe('VIDEO_ERROR media-element detail', () => {
   it('extracts MediaError.code and msExtendedCode from a REAL 4.11.7 payload', () => {
     // shaka-player 4.11.7 builds this error as
