@@ -293,6 +293,75 @@ it('still refuses to play without a licence or a manifest', () => {
     assert.match(code, /preferredKeySystems: \[fairplay, fairplayLegacy\]/);
   });
 
+  it('installs initDataTransform at the drm LEVEL, not inside `advanced`', () => {
+    // THE bug behind the persistent MEDIA_3.
+    //
+    // `drm.initDataTransform` is a top-level DrmConfiguration field, a sibling
+    // of `advanced`. AdvancedDrmConfiguration has no such field, so a transform
+    // nested in `advanced` is never read and Shaka silently keeps the default.
+    //
+    // That default is a no-op on iPhone Safari: it is gated on
+    // `!!window.shakaMediaKeysPolyfill`, which does not exist there, so the raw
+    // `skd://` bytes reach generateRequest un-rebuilt, no content id is derived,
+    // and the track never decrypts.
+    // Structural check: the `advanced` map is opened at a known indentation and
+    // closed by the next line at that same indentation. `initDataTransform`
+    // must not appear between them. Scanning by indentation is deliberate - an
+    // earlier version of this test sliced between two `indexOf` calls and passed
+    // even after the transform was moved back inside `advanced`, so it proved
+    // nothing.
+    const lines = code.split('\n');
+    const openIdx = lines.findIndex((l) => l.trim() === 'advanced: {');
+    assert.ok(openIdx >= 0, 'config must still contain an advanced map');
+    const indentLen = lines[openIdx]!.match(/^\s*/)?.[0].length ?? 0;
+    let closeIdx = -1;
+    for (let i = openIdx + 1; i < lines.length; i++) {
+      // Compared trimmed, not verbatim: the file uses CRLF, so a raw equality
+      // check against an indented '},' never matches.
+      const lead = lines[i]!.match(/^\s*/)?.[0].length ?? 0;
+      if (lines[i]!.trim() === '},' && lead === indentLen) {
+        closeIdx = i;
+        break;
+      }
+    }
+    assert.ok(closeIdx > openIdx, 'the advanced map must be closed at the same indentation');
+    const advancedBody = lines.slice(openIdx + 1, closeIdx).join('\n');
+    assert.doesNotMatch(
+      advancedBody,
+      /initDataTransform/,
+      'initDataTransform must not sit inside the advanced map',
+    );
+
+    // And it must actually be installed, at the drm level, after that block.
+    const afterAdvanced = lines.slice(closeIdx).join('\n');
+    assert.match(
+      afterAdvanced,
+      /\?\s*\(\(\) => \{[\s\S]{0,700}?initDataTransform:/,
+      'initDataTransform must be installed at the drm level',
+    );
+
+    // Shaka's AdvancedDrmConfiguration genuinely has no such field - pinned
+    // against the SHIPPED externs (not our local shim) so the claim cannot
+    // drift from the library we actually load.
+    const externs = readFileSync(
+      resolve(here, '../../../node_modules/shaka-player/dist/shaka-player.compiled.d.ts'),
+      'utf8',
+    );
+    const adv = externs.slice(externs.indexOf('type AdvancedDrmConfiguration'));
+    assert.ok(adv.startsWith('type AdvancedDrmConfiguration'), 'externs must define it');
+    assert.doesNotMatch(
+      adv.slice(0, 500),
+      /initDataTransform/,
+      'AdvancedDrmConfiguration must not gain an initDataTransform field',
+    );
+    const drm = externs.slice(externs.indexOf('type DrmConfiguration'));
+    assert.match(
+      drm.slice(0, 500),
+      /initDataTransform \? :/,
+      'DrmConfiguration must keep initDataTransform at the top level',
+    );
+  });
+
   it('reports whether the element announced encrypted media', () => {
     // The discriminator for the whole diagnosis: if ENC_* never appears, the
     // licence exchange that produced LIC_REQ cannot have come from FairPlay

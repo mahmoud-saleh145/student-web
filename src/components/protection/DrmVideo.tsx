@@ -302,43 +302,66 @@ export default function DrmVideo({
                   [fairplayLegacy]: { serverCertificateUri: drm.certificateUrl },
                 }
               : {}),
-            // FairPlay ONLY. Gumlet's HLS signals keys with
-            // KEYFORMAT=com.apple.streamingkeydelivery, which Shaka's parser
-            // turns into initDataType 'sinf' with an EMPTY buffer plus the
-            // skd:// URI on drmInfo.keySystemUris. Shaka's default transform
-            // keys off 'skd', so it never fires here and the content id is
-            // never derived - Safari would then build a licence request for an
-            // empty content id that the server cannot satisfy. See
-            // lib/fairplay.ts for the full trace.
-            ...(isFairPlay
-              ? (() => {
-                  // Hoisted so the initDataTransform below can call it while
-                  // still reporting the branch it took to the trace.
-                  const fairPlayTransform = createFairPlayInitDataTransform((initData, contentId, cert) =>
-                    shaka.util.FairPlayUtils.initDataTransform(initData, contentId, cert),
-                  );
-                  return {
-                    initDataTransform: (
-                      initData: Uint8Array,
-                      initDataType: string,
-                      drmInfo: Parameters<typeof fairPlayTransform>[2],
-                    ) => {
-                      // Which init-data type arrived, for the on-screen trace.
-                      mark(`IDT_${initDataType || 'NONE'}`);
-                      // The legacy-vs-modern decision lives in lib/fairplay.ts
-                      // (`shouldTransformFairPlayInitData`) so it is covered by
-                      // behavioural tests rather than by source-text matching.
-                      // Rebuilding only the legacy Apple MediaKeys layout keeps
-                      // Modern EME 'sinf' intact, where Safari reads the sinf
-                      // from the CMAF init segment; replacing it with the legacy
-                      // blob strips the key id and the track fails to decode
-                      // (MEDIA_3).
-                      return fairPlayTransform(initData, initDataType, drmInfo);
-                    },
-                  };
-                })()
-              : {}),
           },
+          // FairPlay ONLY, and at the `drm` LEVEL - not inside `advanced`.
+          //
+          // `drm.initDataTransform` is a top-level field of Shaka's
+          // DrmConfiguration, a sibling of `advanced`:
+          //
+          //   type DrmConfiguration = { advanced : {...} | null , ... ,
+          //     initDataTransform ? : shaka.extern.InitDataTransform , ... }
+          //
+          // AdvancedDrmConfiguration, by contrast, only carries
+          // serverCertificate / serverCertificateUri / robustness / sessionType
+          // and friends - there is no initDataTransform field to set. A
+          // transform placed inside `advanced` is therefore never read: it sits
+          // under a key Shaka treats as a key-system name, and
+          // `DrmEngine` keeps using the DEFAULT transform.
+          //
+          // That default is a no-op on exactly the platform we care about:
+          //
+          //   initDataTransform: (m, n, p) => {
+          //     hasLegacyAppleMediaKeys() && n === 'skd' && (...); return m }
+          //   hasLegacyAppleMediaKeys = () => !!window.shakaMediaKeysPolyfill
+          //
+          // There is no such polyfill on iPhone Safari, so `false && ...`
+          // short-circuits and the raw `skd://` bytes are handed straight to
+          // generateRequest without ever being rebuilt into the legacy
+          // [initData][contentId][certificate] layout. The CDM cannot derive a
+          // content id from that, the SPC Gumlet receives is unusable, and the
+          // track never decrypts - MediaError.code 3, with no licence error
+          // anywhere to hint at the cause.
+          //
+          // So this transform is the ONLY thing that makes FairPlay work here,
+          // and it has to sit at this level to run at all.
+          ...(isFairPlay
+            ? (() => {
+                // Hoisted so the transform below can call it while still
+                // reporting the branch it took to the trace.
+                const fairPlayTransform = createFairPlayInitDataTransform((initData, contentId, cert) =>
+                  shaka.util.FairPlayUtils.initDataTransform(initData, contentId, cert),
+                );
+                return {
+                  initDataTransform: (
+                    initData: Uint8Array,
+                    initDataType: string,
+                    drmInfo: Parameters<typeof fairPlayTransform>[2],
+                  ) => {
+                    // Which init-data type arrived, for the on-screen trace.
+                    mark(`IDT_${initDataType || 'NONE'}`);
+                    // The legacy-vs-modern decision lives in lib/fairplay.ts
+                    // (`shouldTransformFairPlayInitData`) so it is covered by
+                    // behavioural tests rather than by source-text matching.
+                    // Rebuilding only the legacy Apple MediaKeys layout keeps
+                    // Modern EME 'sinf' intact, where Safari reads the sinf
+                    // from the CMAF init segment; replacing it with the legacy
+                    // blob strips the key id and the track fails to decode
+                    // (MEDIA_3).
+                    return fairPlayTransform(initData, initDataType, drmInfo);
+                  },
+                };
+              })()
+            : {}),
         },
         abr: { enabled: true },
       });
