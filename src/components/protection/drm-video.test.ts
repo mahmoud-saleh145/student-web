@@ -253,6 +253,46 @@ it('still refuses to play without a licence or a manifest', () => {
     );
   });
 
+  it('names the FairPlay key systems so the PSSH cannot win the session', () => {
+    // The deployed `parseInbandPsshEnabled: false` did NOT fix this, and the
+    // device trace proved why: `ENC_skd` fired without `IDT_*`. Stopping
+    // in-band parsing is necessary but not sufficient - the manifest still
+    // advertises a PSSH-bearing Widevine DrmInfo on the same stream, and
+    // `fixDrmInfo` never removes a key system we serve no licence URL for.
+    //
+    // `chooseDecodingInfo(tracks, current, drm.preferredKeySystems)` is what
+    // picks the session's DrmInfo, so naming the key systems we actually serve
+    // is the control that matters.
+    assert.match(
+      code,
+      /preferredKeySystems: \[fairplay, fairplayLegacy\]/,
+      'FairPlay must name both FairPlay key systems',
+    );
+    assert.match(
+      code,
+      /\?\s*\{\s*preferredKeySystems:\s*\[fairplay,\s*fairplayLegacy\]\s*\}\s*:\s*\{\}/,
+      'preferredKeySystems must be scoped to the FairPlay branch',
+    );
+
+    // Scoped: Widevine must keep its default ordering or DASH breaks, since a
+    // Widevine ticket has no FairPlay entry and lives entirely off the PSSH.
+    const sites = (code.match(/preferredKeySystems/g) ?? []).length;
+    assert.equal(sites, 1, 'preferredKeySystems must be set in exactly one place');
+    assert.doesNotMatch(
+      code,
+      /preferredKeySystems:\s*\[\s*\]/,
+      'must never override the preference on the non-FairPlay path',
+    );
+  });
+
+  it('keeps the two FairPlay fixes independent, neither alone is sufficient', () => {
+    // Guards against "one of these must be enough" reasoning creeping back in:
+    // in-band parsing off removes the *runtime* PSSH source, naming the key
+    // systems removes the *manifest* one. Both are needed.
+    assert.match(code, /isFairPlay \? \{ parseInbandPsshEnabled: false \} : \{\}/);
+    assert.match(code, /preferredKeySystems: \[fairplay, fairplayLegacy\]/);
+  });
+
   it('reports whether the element announced encrypted media', () => {
     // The discriminator for the whole diagnosis: if ENC_* never appears, the
     // licence exchange that produced LIC_REQ cannot have come from FairPlay

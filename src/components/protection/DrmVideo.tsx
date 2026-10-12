@@ -244,6 +244,44 @@ export default function DrmVideo({
           // signed manifest, the same licence server and certificate, the same
           // key systems and the same entitlement checks all still apply.
           ...(isFairPlay ? { parseInbandPsshEnabled: false } : {}),
+          // ...and the same PSSH still competes for the session.
+          //
+          // Shaka's parser maps the two key entries to two DrmInfos on the
+          // SAME stream:
+          //
+          //   com.apple.fps       initDataType 'sinf', initData = Uint8Array(0)
+          //   com.widevine.alpha  initDataType 'cenc', initData = the PSSH
+          //
+          // `DrmUtils.fixDrmInfo` does NOT drop a key system just because we
+          // serve no licence URL for it, so both survive on the stream and
+          // compete in `chooseDecodingInfo`. That chooser is the only thing
+          // that decides which one the session is built from, and it is driven
+          // by `preferredKeySystems`:
+          //
+          //   chooseDecodingInfo(tracks, current, drm.preferredKeySystems)
+          //
+          // with an empty list it picks by codec/key-system support alone, and
+          // the PSSH-bearing DrmInfo wins. The session is then created from
+          // the PSSH, `drmInfo.initData` is non-empty, and
+          // `DrmEngine.attach` takes this branch instead of registering the
+          // `encrypted` handler:
+          //
+          //   if (initData.length || queued.length || parseInbandPsshEnabled)
+          //       -> no `encrypted` listener
+          //
+          // which is exactly the observed state: `ENC_skd` present (Safari did
+          // hand us the `skd://` init data) but no `IDT_*` (our
+          // `initDataTransform` was never reached), so the licence request went
+          // out for the Widevine PSSH and the CKC it returned is not one the
+          // Apple CDM can use for these segments.
+          //
+          // Naming the key systems we actually serve makes the chooser pick the
+          // FairPlay DrmInfo, whose initData is legitimately empty because
+          // FairPlay signalling arrives via the `encrypted` event. FairPlay
+          // ONLY - Widevine must keep its own ordering untouched.
+          ...(isFairPlay
+            ? { preferredKeySystems: [fairplay, fairplayLegacy] }
+            : {}),
           servers: isFairPlay
             ? { [fairplay]: drm.licenseUrl, [fairplayLegacy]: drm.licenseUrl }
             : { [widevine]: drm.licenseUrl },
