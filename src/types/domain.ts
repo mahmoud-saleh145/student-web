@@ -210,6 +210,8 @@ export interface PlaybackTicket {
     certificateUrl: string | null;
     licenseHeaders: Record<string, string>;
   };
+  /** TEMPORARY playback hotfix: signed Gumlet embed-player URL, when the backend enables it. */
+  embedUrl?: string | null;
   watermark: WatermarkPayload;
   captions: CaptionTrack[];
   expiresAt: string;

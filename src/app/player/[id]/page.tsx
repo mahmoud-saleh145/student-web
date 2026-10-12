@@ -13,6 +13,7 @@ import { api, ApiError } from '@/lib/api-client';
 import { formatTimecode } from '@/lib/format';
 import { detectPlaybackPlatform } from '@/lib/playback-platform';
 import { isDrmPlaybackTicket } from '@/lib/drm-playback';
+import { gumletEmbedSrc, isRejectedDeliveryField, playbackTicketRequestBody } from '@/lib/gumlet-embed';
 import { qk } from '@/lib/query-keys';
 import { useTranslation } from '@/lib/session-context';
 import { usePlayerStore } from '@/store/stores';
@@ -163,12 +164,20 @@ function ProtectedPlayer({
     setLoading(true);
     setError(null);
     try {
+      // `platform` must reflect the real device: the backend switches to
+      // FairPlay only for `ios`. Hardcoding 'web' handed Safari a Widevine
+      // licence URL, and iOS implements FairPlay exclusively.
+      // TEMPORARY hotfix: iOS web also opts in to Gumlet's embed player
+      // (lib/gumlet-embed.ts); a backend that predates the field rejects it,
+      // and the request is then repeated without it.
+      const platform = detectPlaybackPlatform();
+      const body = playbackTicketRequestBody(platform);
+      const requestTicket = (payload: object) =>
+        api.post<PlaybackTicket>(`playback/videos/${videoId}/ticket`, payload);
       const [tk, al] = await Promise.all([
-        api.post<PlaybackTicket>(`playback/videos/${videoId}/ticket`, {
-          // Must reflect the real device: the backend switches to FairPlay only
-          // for `ios`. Hardcoding 'web' handed Safari a Widevine licence URL,
-          // and iOS implements FairPlay exclusively.
-          platform: detectPlaybackPlatform(),
+        requestTicket(body).catch((e: unknown) => {
+          if (body.delivery && isRejectedDeliveryField(e)) return requestTicket({ platform });
+          throw e;
         }),
         api.get<{ used: number; limit: number; remaining: number }>(`playback/videos/${videoId}/allowance`).catch(() => null),
       ]);
@@ -298,6 +307,9 @@ function ProtectedPlayer({
   // over HLS (Gumlet publishes no DASH FairPlay), and the legacy AES-128 path can
   // also carry a licence URL. See lib/drm-playback.ts.
   const isDrmPlayback = isDrmPlaybackTicket(ticket);
+  // TEMPORARY playback hotfix: when the backend sends a signed Gumlet embed URL,
+  // Gumlet's own player is used instead of DrmVideo. Null keeps today's routing.
+  const embedSrc = gumletEmbedSrc(ticket);
 
   if (loading) {
     return (
@@ -338,7 +350,27 @@ function ProtectedPlayer({
           onDoubleClick={toggleFullscreen}
           className="relative mx-auto w-full max-w-5xl [&:fullscreen]:flex [&:fullscreen]:max-w-none [&:fullscreen]:items-center [&:fullscreen]:bg-black"
         >
-          {isDrmPlayback ? (
+          {embedSrc ? (
+            // TEMPORARY playback hotfix: Gumlet's own player (lib/gumlet-embed.ts).
+            // Only rendered when the backend issued a signed embed URL for this
+            // ticket; otherwise the DRM / legacy players below are unchanged.
+            <>
+              <iframe
+                src={embedSrc}
+                title={title}
+                className="aspect-video w-full rounded-lg bg-black"
+                allow="encrypted-media; autoplay; fullscreen; picture-in-picture"
+                allowFullScreen
+                referrerPolicy="strict-origin-when-cross-origin"
+              />
+              <Watermark
+                primary={ticket.watermark.primary}
+                secondary={ticket.watermark.secondary}
+                opacity={ticket.watermark.opacity}
+                intervalMs={Math.max(5, ticket.watermark.moveIntervalSeconds || 12) * 1000}
+              />
+            </>
+          ) : isDrmPlayback ? (
             <DrmVideo
               manifestUrl={ticket.manifestUrl}
               drm={{
