@@ -386,7 +386,33 @@ describe('FairPlay failure stage tagging', () => {
  * 4 SRC_NOT_SUPPORTED.
  */
 describe('VIDEO_ERROR media-element detail', () => {
-  it('extracts MediaError.code and msExtendedCode from a VIDEO_ERROR payload', () => {
+  it('extracts MediaError.code and msExtendedCode from a REAL 4.11.7 payload', () => {
+    // shaka-player 4.11.7 builds this error as
+    //   new Error(VIDEO_ERROR, mediaError.code,
+    //             mediaError.msExtendedCode.toString(16), mediaError.message)
+    // so the MediaError code is index 0 with NO leading 3016. This is the
+    // shape that actually reaches the handler; the one below it is historical.
+    assert.deepEqual(videoErrorDetail({ code: 3016, data: [3, '80004005', 'msg'] }), {
+      code: 3,
+      ext: '80004005',
+    });
+    assert.deepEqual(videoErrorDetail({ code: 3016, data: [4, '1', 'unsupported'] }), {
+      code: 4,
+      ext: '1',
+    });
+    // Safari frequently reports msExtendedCode as absent/zero.
+    assert.deepEqual(videoErrorDetail({ code: 3016, data: [2] }), { code: 2, ext: undefined });
+  });
+
+  it('REGRESSION: a decode failure must not be reported as a bare VIDEO_ERROR', () => {
+    // The decoder used to read index 1, which holds a hex STRING on a real
+    // payload, so it returned null and the MediaError code was lost entirely.
+    const detail = videoErrorDetail({ code: 3016, data: [3, '80004005', 'decode failed'] });
+    assert.notEqual(detail, null, 'MediaError.code 3 (DECODE) must survive decoding');
+    assert.equal(detail?.code, 3);
+  });
+
+  it('still accepts the legacy layout with a leading 3016', () => {
     assert.deepEqual(videoErrorDetail({ code: 3016, data: [3016, 4, '80004005', 'msg'] }), {
       code: 4,
       ext: '80004005',
@@ -398,12 +424,14 @@ describe('VIDEO_ERROR media-element detail', () => {
     // A licence failure must not be mislabelled as a media failure.
     assert.equal(videoErrorDetail({ code: 6008, data: [6008, 4, 'x', 'msg'] }), null);
     assert.equal(videoErrorDetail({ code: 6001, data: [6001, 4, 'x'] }), null);
+    // A licence error carrying a numeric first field must not be read as one.
+    assert.equal(videoErrorDetail({ code: 6008, data: [3, '80004005'] }), null);
   });
 
   it('never returns the browser MediaError message', () => {
     const detail = videoErrorDetail({
       code: 3016,
-      data: [3016, 2, 'ff', 'The media could not be loaded from https://v.example/main.m3u8'],
+      data: [2, 'ff', 'The media could not be loaded from https://v.example/main.m3u8'],
     });
     const serialised = JSON.stringify(detail);
     assert.ok(!/https?:|example|media could not/i.test(serialised));
@@ -421,5 +449,12 @@ describe('VIDEO_ERROR media-element detail', () => {
       code: 1,
       ext: undefined,
     });
+    assert.deepEqual(videoErrorDetail({ code: 3016, data: [1, 'not-hex!!'] }), {
+      code: 1,
+      ext: undefined,
+    });
+    // No integer field at either index -> nothing safe to report.
+    assert.equal(videoErrorDetail({ code: 3016, data: [] }), null);
+    assert.equal(videoErrorDetail({ code: 3016, data: [null, 'x'] }), null);
   });
 });

@@ -4,6 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
+import { streamingConfigForNativeHls } from '../../lib/fairplay-native-hls.ts';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (p: string) => readFileSync(resolve(here, p), 'utf8');
 
@@ -180,13 +182,56 @@ it('still refuses to play without a licence or a manifest', () => {
 
   it('configures preferNativeHls so Shaka hands HLS to Safari rather than MSE', () => {
     // Shaka does not support FairPlay through MSE at all
-    // (shaka-project/shaka-player#2096). preferNativeHls is what selects the
-    // supported native route; attach() alone would use MSE and fail to decode
-    // cbcs (the earlier MEDIA_3).
+    // (shaka-project/shaka-player#2096). preferNativeHls is what routes
+    // the load to Safari's native engine instead of MSE.
     assert.match(code, /streamingConfigForNativeHls\(\)/);
     assert.match(code, /player\.configure\(streamingConfigForNativeHls\(\)\)/);
     // And it is set on the native path specifically.
     assert.match(code, /if\s*\(useNativeHls\)\s*\{\s*mark\('NATIVE_HLS'\);\s*player\.configure/);
+  });
+
+  it('sets useNativeHlsForFairPlay, the flag Shaka 4.11.7 actually reads', () => {
+    // Regression guard. Shaka picks the engine with
+    //   isApple() && fpsServers ? streaming.useNativeHlsForFairPlay
+    //                             : streaming.preferNativeHls
+    // and we DO configure com.apple.fps servers, so preferNativeHls is dead
+    // code for this ticket. Without this flag the previous fix changed nothing
+    // and FairPlay stayed on MSE, producing MEDIA_3 again.
+    const { streaming } = streamingConfigForNativeHls();
+    assert.equal(streaming.useNativeHlsForFairPlay, true);
+    assert.match(code, /player\.configure\(streamingConfigForNativeHls\(\)\)/);
+  });
+
+  it('reports which engine Shaka actually selected', () => {
+    // Native-vs-MSE is not purely configuration: Shaka also falls back to MSE
+    // when the manifest Content-Type is not HLS. Reading video.mediaSource is
+    // the only direct observation, and it is what turns "MEDIA_3 happened"
+    // into "FairPlay was decoded over MSE".
+    assert.match(code, /const markRoute = React\.useCallback\(\(\) => \{/);
+    assert.match(code, /mediaSource \? 'ROUTE_MSE' : 'ROUTE_NATIVE'/);
+
+    // Both call sites, not merely the presence of the tokens. A run that fails
+    // before LOADED has no other route evidence, so the error path matters most.
+    assert.match(
+      code,
+      /mark\('LOADED'\);\s*markRoute\(\);/,
+      'route must be recorded after a successful load',
+    );
+    const errorHandler = code.slice(code.indexOf("addEventListener('error'"));
+    assert.match(
+      errorHandler.slice(0, 1400),
+      /markRoute\(\);/,
+      'route must be recorded on the failure path too',
+    );
+  });
+
+  it('decodes the MediaError on the load() rejection path too', () => {
+    // The native-HLS path reports a media failure by REJECTING load(), so the
+    // catch block is where MediaError.code lives on the path that is supposed
+    // to work. Without this the screen shows a bare ERR_VIDEO_ERROR.
+    const catchBlock = code.slice(code.indexOf('} catch (e) {'));
+    assert.match(catchBlock, /videoErrorDetail\(/);
+    assert.match(catchBlock, /MEDIA_/);
   });
 
   it('keeps both FairPlay key systems and the certificate on the native path', () => {

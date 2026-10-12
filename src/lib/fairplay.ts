@@ -175,11 +175,28 @@ export const FAIRPLAY_LEGACY_INIT_DATA_TYPE = 'skd';
  * Extract the numeric media-element detail from a Shaka VIDEO_ERROR payload.
  *
  * Shaka raises `VIDEO_ERROR` (3016) from exactly one place: StreamingEngine,
- * when the `<video>` element's `error` property is set. The payload is
- * `[code, MediaError.code, msExtendedCode, message]`.
+ * when the `<video>` element's `error` property is set.
  *
- * Only the two NUMBERS are returned. `data[3]` is the browser's MediaError
- * message, which can quote a source URL, so it is never read.
+ * THE PAYLOAD SHAPE, in shaka-player 4.11.7, is
+ *
+ *     new Error(VIDEO_ERROR, mediaError.code,
+ *               mediaError.msExtendedCode.toString(16), mediaError.message)
+ *
+ * i.e. `[MediaError.code, msExtendedCodeHex, message]`. The MediaError code is
+ * at index 0 and there is NO leading 3016.
+ *
+ * This module previously assumed `[code, MediaError.code, msExtendedCode,
+ * message]` and read index 1. Against the real payload that index holds a HEX
+ * STRING, so the decoder returned null for every genuine media error and the
+ * player reported a bare `ERR_VIDEO_ERROR` with the MediaError code missing
+ * entirely - which is precisely the detail needed to tell a DECODE failure from
+ * a NETWORK one. The unit tests encoded the same wrong shape, so they passed
+ * while production returned null. Both shapes are now accepted; the legacy
+ * layout is recognised by its leading 3016, which can never be a MediaError
+ * code.
+ *
+ * Only the two NUMBERS are returned. The trailing element is the browser's
+ * MediaError message, which can quote a source URL, so it is never read.
  *
  * MediaError.code: 1 ABORTED, 2 NETWORK, 3 DECODE, 4 SRC_NOT_SUPPORTED.
  */
@@ -190,9 +207,22 @@ export function videoErrorDetail(detail: {
   if (detail?.code !== 3016) return null;
   const data = detail.data;
   if (!Array.isArray(data)) return null;
-  const code = data[1];
-  if (typeof code !== 'number' || !Number.isInteger(code)) return null;
-  const raw = data[2];
+
+  // The current layout puts the MediaError code at index 0. 3016 is Shaka's own
+  // error code and is never a MediaError code, so its presence identifies the
+  // legacy layout unambiguously.
+  const isCurrentLayout =
+    typeof data[0] === 'number' && Number.isInteger(data[0]) && data[0] !== 3016;
+  const isLegacyLayout =
+    !isCurrentLayout &&
+    data[0] === 3016 &&
+    typeof data[1] === 'number' &&
+    Number.isInteger(data[1]);
+
+  if (!isCurrentLayout && !isLegacyLayout) return null;
+
+  const code = isCurrentLayout ? data[0] : data[1];
+  const raw = isCurrentLayout ? data[1] : data[2];
   const ext = typeof raw === 'string' && /^[0-9a-f]+$/i.test(raw) ? raw.toLowerCase() : undefined;
   return { code, ext };
 }

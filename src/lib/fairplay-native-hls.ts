@@ -63,9 +63,33 @@ export function needsNativeFairPlayHls(ticket: FairPlayRoutingInput | null | und
 /**
  * The Shaka configuration fragment for the two delivery modes.
  *
- * Exported so the rule is assertable without mounting a component, and so the
- * reason the flag exists sits next to the code that depends on it.
+ * BOTH flags are set, and the second one is the load-bearing one.
+ *
+ * Shaka decides native-vs-MSE in one function, which in 4.11.7 reads:
+ *
+ *     if (isHlsMime(contentType))
+ *       return isApple() && (drm.servers['com.apple.fps']
+ *                            || drm.servers['com.apple.fps.1_0'])
+ *         ? streaming.useNativeHlsForFairPlay
+ *         : streaming.preferNativeHls;
+ *
+ * This ticket configures `com.apple.fps` servers, so that first branch is the
+ * one taken and `useNativeHlsForFairPlay` is what decides the route.
+ * `preferNativeHls` is consulted only when NO FairPlay key system is
+ * configured, so setting it alone did nothing for us.
+ *
+ * The same function also returns false - i.e. silently picks MSE - whenever the
+ * manifest response's Content-Type is not something the element reports it can
+ * play, or is absent. Native routing therefore cannot be guaranteed by
+ * configuration alone; it also depends on the manifest response headers.
+ *
+ * `useNativeHlsForFairPlay` already defaults to true, so setting it explicitly
+ * is not a behaviour change in itself - it is here so the intent is stated at
+ * the one place that governs it, and so a future default change cannot silently
+ * move FairPlay back onto MSE.
  */
-export function streamingConfigForNativeHls(): { streaming: { preferNativeHls: boolean } } {
-  return { streaming: { preferNativeHls: true } };
+export function streamingConfigForNativeHls(): {
+  streaming: { preferNativeHls: boolean; useNativeHlsForFairPlay: boolean };
+} {
+  return { streaming: { preferNativeHls: true, useNativeHlsForFairPlay: true } };
 }

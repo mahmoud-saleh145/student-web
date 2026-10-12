@@ -50,9 +50,32 @@ describe('needsNativeFairPlayHls', () => {
 });
 
 describe('streamingConfigForNativeHls', () => {
-  it('asks Shaka to prefer native HLS', () => {
-    const cfg = streamingConfigForNativeHls();
-    assert.equal(cfg.streaming.preferNativeHls, true);
+  it('sets useNativeHlsForFairPlay, which is the flag Shaka actually reads', () => {
+    // This is the regression. Shaka 4.11.7 picks the engine in one place:
+    //
+    //   if (isHlsMime(contentType))
+    //     return isApple() && (drm.servers['com.apple.fps'] ||
+    //                          drm.servers['com.apple.fps.1_0'])
+    //       ? streaming.useNativeHlsForFairPlay
+    //       : streaming.preferNativeHls;
+    //
+    // This ticket configures com.apple.fps servers, so `preferNativeHls` is
+    // never consulted. Setting it alone changed nothing at runtime, which is
+    // why the MEDIA_3 failure survived the previous attempt.
+    assert.equal(streamingConfigForNativeHls().streaming.useNativeHlsForFairPlay, true);
+  });
+
+  it('still sets preferNativeHls for the no-FairPlay-key-system case', () => {
+    // Shaka falls back to this flag when neither com.apple.fps server is
+    // configured, so both are set rather than trading one for the other.
+    assert.equal(streamingConfigForNativeHls().streaming.preferNativeHls, true);
+  });
+
+  it('never turns a native flag off, which would mean MSE for FairPlay', () => {
+    const { streaming } = streamingConfigForNativeHls();
+    for (const [key, value] of Object.entries(streaming)) {
+      assert.equal(value, true, `streaming.${key} must not disable native playback`);
+    }
   });
 
   it('returns a fresh object each call so callers cannot mutate shared state', () => {

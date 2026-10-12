@@ -108,6 +108,28 @@ export default function DrmVideo({
     setTrace((prev) => (prev.includes(token) ? prev : [...prev, token]));
   }, []);
 
+  /**
+   * Which engine Shaka actually chose.
+   *
+   * `video.mediaSource` is non-null only while the element is under Media
+   * Source Extensions control, so this reads the routing decision directly
+   * through a public DOM API instead of inferring it. That matters because
+   * Shaka's native-vs-MSE choice is not purely configuration: it also depends on
+   * the manifest response's Content-Type, so a ticket can be routed onto MSE
+   * even with every native flag set. FairPlay over MSE is the exact failure
+   * this branch exists to prevent, and `LIC_REQ` only proves the DRM engine ran
+   * - which is itself the tell. Recording the route makes it unambiguous on a
+   * device report instead of something to be inferred from mark ordering.
+   */
+  const markRoute = React.useCallback(() => {
+    // `HTMLMediaElement.mediaSource` is a standard DOM property but is absent
+    // from this project's TypeScript DOM lib, so it is read through one narrow
+    // optional property rather than a cast of the whole element. The value is
+    // only ever tested for truthiness - nothing about it is ever emitted.
+    const element = videoRef.current as (HTMLVideoElement & { mediaSource?: unknown }) | null;
+    mark(element?.mediaSource ? 'ROUTE_MSE' : 'ROUTE_NATIVE');
+  }, [mark]);
+
   // Keep the latest callbacks reachable without making them effect dependencies,
   // which would tear down and rebuild the player on every parent render.
   const cbs = React.useRef({ onTerminate, onError, onPlayback, onPause, onTimeUpdate, onEnded });
@@ -321,6 +343,9 @@ export default function DrmVideo({
         // message]; we read the two NUMBERS and never the message.
         const media = videoErrorDetail(detail);
         if (media) mark(`MEDIA_${media.code}${media.ext ? '_' + media.ext : ''}`);
+        // Record the route on failure too - this is where it matters most, and
+        // a run that never reached LOADED has no other route evidence.
+        markRoute();
         const reported = fpStage
           ? `DRM_FAIRPLAY_${fpStage}`
           : isLicence
@@ -339,6 +364,16 @@ export default function DrmVideo({
         const code = (e as { code?: number })?.code;
         const name = code ? (Object.entries(shaka.util.Error.Code).find(([, v]) => v === code)?.[0] ?? 'UNKNOWN') : 'UNKNOWN';
         const fpStage = fairPlayStageFromMessage((e as { message?: unknown })?.message);
+        // The native-HLS path reports a media failure by REJECTING load() with
+        // the same VIDEO_ERROR (3016) Shaka's error event carries, so this catch
+        // is where MediaError.code lives on exactly the path that is supposed to
+        // work. Decoding it here is what stops the screen showing a bare
+        // ERR_VIDEO_ERROR with the code missing.
+        const media = videoErrorDetail({
+          code: typeof code === 'number' ? code : undefined,
+          data: (e as { data?: unknown })?.data,
+        });
+        if (media) mark(`MEDIA_${media.code}${media.ext ? '_' + media.ext : ''}`);
         setFatal(
           fpStage
             ? `Protected playback failed (${fpStage}). Please reload the lesson.`
@@ -347,13 +382,14 @@ export default function DrmVideo({
               : `Could not start protected playback (${name}). Please reload the lesson.`,
         );
         const reported = fpStage ? `DRM_FAIRPLAY_${fpStage}` : `DRM_PLAYBACK_${name}`;
-        mark(fpStage ? `ERR_${fpStage}` : `ERR_${name}`);
+        mark(fpStage ? `ERR_${fpStage}` : media ? `ERR_${name}_${media.code}` : `ERR_${name}`);
         setStage(reported);
         cbs.current.onError?.(reported);
         return;
       }
       if (disposed) return;
       mark('LOADED');
+      markRoute();
 
       // Backstop for the media layer. Shaka raises VIDEO_ERROR from the same
       // signal, but a native-source failure can reach the element without it, and
