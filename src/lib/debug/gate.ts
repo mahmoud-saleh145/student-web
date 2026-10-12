@@ -84,6 +84,19 @@ export function debugGate(input: DebugGateInput): DebugGateResult {
 }
 
 /**
+ * A failure reduced to its error class name (`TypeError`, `ChunkLoadError`…),
+ * for the on-screen debug banner.
+ *
+ * The message is never used: a chunk-load or network failure message can quote
+ * a URL. Only a name matching a plain identifier is returned; anything else is
+ * `Error`, and a non-Error throw is `Unknown`.
+ */
+export function debugErrorToken(error: unknown): string {
+  if (!(error instanceof Error)) return 'Unknown';
+  return /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(error.name) ? error.name : 'Error';
+}
+
+/**
  * Strip a URL down to something that is safe to display.
  *
  * Media, manifest and licence URLs are signed. The query string carries the

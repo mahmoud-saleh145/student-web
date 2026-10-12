@@ -8,7 +8,7 @@
  * this, because Next compiles an unset `NEXT_PUBLIC_*` variable to a member
  * lookup rather than a literal, so the import branch is not statically dead.
  *
- * The shape mirrors the three eruda methods the player calls, so if this module
+ * The shape mirrors the eruda methods DebugBoot calls, so if this module
  * is ever reached the failure is silent and benign: `init` mounts no panel,
  * `get` returns nothing, and no DOM, storage, cookie or network API is touched.
  * Nothing here can observe or expose anything.
@@ -24,6 +24,12 @@
 module.exports = {
   init() {},
   get() {
+    return undefined;
+  },
+  show() {
+    return undefined;
+  },
+  position() {
     return undefined;
   },
   destroy() {},

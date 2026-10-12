@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 
-import { debugGate, PRODUCTION_HOSTS, type DebugRecord } from '@/lib/debug/gate';
+import { debugErrorToken, debugGate, PRODUCTION_HOSTS, type DebugRecord } from '@/lib/debug/gate';
 import { setDebugSink } from '@/lib/debug/sink';
 
 /**
@@ -42,11 +42,37 @@ import { setDebugSink } from '@/lib/debug/sink';
  * emitted here - see the report for why Eruda could not see the native media
  * requests anyway.
  *
- * NOTE ON THE API: eruda 3.x exposes `init`/`get`/`destroy` only - there is no
- * `addLog`. Records are published with `console.info`, which the Console tool
- * captures by design.
+ * NOTE ON THE API: eruda 3.x has no `addLog`. Records are published with
+ * `console.info`, which the Console tool captures by design. `show` and
+ * `position` (eruda.d.ts) drive the banner's "Open console" button and move the
+ * entry button to the top-left.
+ *
+ * VISIBLE BANNER: when (and only when) the gate passes, a fixed high-contrast
+ * banner reading `FAIRPLAY DEBUG ENABLED` is rendered at the top, before Eruda
+ * is even loaded, and it reports Eruda's load state. No banner on a device
+ * therefore means the gate refused (no build flag, or a production host).
  */
+type ErudaStatus = { state: 'loading' | 'ready' } | { state: 'failed'; error: string };
+
+type ErudaApi = {
+  init: (options: Record<string, unknown>) => void;
+  show: (name?: string) => unknown;
+  position: (p: { x: number; y: number }) => unknown;
+};
+
+/**
+ * Height reserved for the banner. Eruda's entry button is moved just below it,
+ * top-left, instead of its default bottom-right corner, which sits under
+ * iOS Safari's toolbar and home indicator.
+ */
+const BANNER_HEIGHT_PX = 44;
+
 export function DebugBoot() {
+  // `null` = gate refused (Production, or a build without the flag): nothing is
+  // rendered at all. Only a passed gate ever reaches the banner below.
+  const [status, setStatus] = React.useState<ErudaStatus | null>(null);
+  const erudaRef = React.useRef<ErudaApi | null>(null);
+
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -58,11 +84,16 @@ export function DebugBoot() {
     // reason is still available to tests through `debugGate()` itself.
     if (!gate.allowed) return;
 
+    // The banner is shown BEFORE Eruda is loaded, from this same confirmed
+    // path, so a device report can separate "gate refused / no build flag"
+    // (no banner) from "gate passed but Eruda failed" (banner says why).
+    setStatus({ state: 'loading' });
+
     let cancelled = false;
 
     void (async () => {
       try {
-        const eruda = (await import('eruda')).default;
+        const eruda = (await import('eruda')).default as unknown as ErudaApi;
         if (cancelled) return;
 
         eruda.init({
@@ -71,6 +102,9 @@ export function DebugBoot() {
           autoScale: true,
           useShadowDom: true,
         });
+        // Top-left, below the banner: reachable on iPhone whatever the toolbar.
+        eruda.position({ x: 8, y: BANNER_HEIGHT_PX + 8 });
+        erudaRef.current = eruda;
 
         setDebugSink((record: DebugRecord) => {
           const parts = [`[fp:${record.k}]`];
@@ -81,19 +115,72 @@ export function DebugBoot() {
         });
 
         console.info(`[fp-debug] enabled (${gate.reason})`);
-      } catch {
+        setStatus({ state: 'ready' });
+      } catch (error) {
         console.warn('[fp-debug] failed to load; in-app diagnostics still work');
+        if (!cancelled) setStatus({ state: 'failed', error: debugErrorToken(error) });
       }
     })();
 
     return () => {
       cancelled = true;
+      erudaRef.current = null;
       setDebugSink(null);
     };
   }, []);
 
-  // Renders nothing. Eruda mounts its own panel into the document.
-  return null;
+  if (!status) return null;
+
+  const label =
+    status.state === 'failed' ? `eruda: failed (${status.error})` : `eruda: ${status.state}`;
+
+  return (
+    <div
+      role="status"
+      data-fairplay-debug-banner={status.state}
+      dir="ltr"
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 2147483647,
+        minHeight: BANNER_HEIGHT_PX,
+        paddingTop: 'env(safe-area-inset-top)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
+        background: '#ffeb3b',
+        color: '#000',
+        font: '700 13px/1.2 ui-monospace, Menlo, monospace',
+        boxShadow: '0 2px 0 #000',
+      }}
+    >
+      <span>FAIRPLAY DEBUG ENABLED · {label}</span>
+      <button
+        type="button"
+        disabled={status.state !== 'ready'}
+        // `show()` with NO argument opens the panel. `show('console')` only
+        // switches tools (eruda 3.4.3: `e ? showTool(e) : show()`) and leaves the
+        // panel closed. Console is the only tool enabled, so it opens on it.
+        onClick={() => erudaRef.current?.show()}
+        style={{
+          padding: '6px 10px',
+          background: '#000',
+          color: '#ffeb3b',
+          border: 0,
+          borderRadius: 4,
+          font: 'inherit',
+          opacity: status.state === 'ready' ? 1 : 0.4,
+        }}
+      >
+        Open console
+      </button>
+    </div>
+  );
 }
 
 /** Re-exported so tests can assert the production deny-list is populated. */

@@ -61,7 +61,7 @@ describe('eruda is kept out of production bundles at BUILD time', () => {
 
   it('provides a stub whose surface matches what the player calls', () => {
     const stub = read('src/lib/debug/eruda-stub.js');
-    for (const method of ['init', 'get', 'destroy']) {
+    for (const method of ['init', 'get', 'show', 'position', 'destroy']) {
       assert.ok(stub.includes(method), `the stub must expose ${method}()`);
     }
     // Comments are stripped first: the explanatory text legitimately names
@@ -89,6 +89,33 @@ describe('eruda is kept out of production bundles at BUILD time', () => {
       .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
       .filter(Boolean);
     assert.deepEqual(tools, ['console']);
+  });
+
+  it('renders the visible banner only after the gate has passed', () => {
+    // No banner on a device must mean "gate refused"; a banner must mean the
+    // build flag AND the preview host both passed. So the only path that sets a
+    // status is after the `!gate.allowed` early return, and a null status
+    // renders nothing at all.
+    const boot = read('src/components/debug/DebugBoot.tsx');
+    const refuse = boot.indexOf('if (!gate.allowed) return;');
+    const firstStatus = boot.indexOf("setStatus({ state: 'loading' })");
+    assert.ok(refuse > -1, 'the gate refusal must return early');
+    assert.ok(firstStatus > refuse, 'the banner state must only be set after the gate passed');
+    assert.match(boot, /if \(!status\) return null;/, 'no status, no output');
+    assert.match(boot, /FAIRPLAY DEBUG ENABLED/);
+    // The banner shows fixed tokens only: never the host, URL or a raw message.
+    const jsx = boot.slice(boot.indexOf('if (!status) return null;'));
+    assert.doesNotMatch(jsx, /window\.location|hostname|\.message/);
+    assert.match(boot, /error: debugErrorToken\(error\)/, 'failures are reduced to a class name');
+  });
+
+  it('opens the console from the banner, not only via the floating button', () => {
+    const boot = read('src/components/debug/DebugBoot.tsx');
+    // No argument: in eruda 3.4.3 `show(name)` only switches tools and leaves
+    // the panel closed; `show()` is what opens it.
+    assert.match(boot, /erudaRef\.current\?\.show\(\)/);
+    assert.doesNotMatch(boot, /\.show\('console'\)/);
+    assert.match(boot, /eruda\.position\(\{ x: 8, y: BANNER_HEIGHT_PX \+ 8 \}\)/);
   });
 
   it('never sends the hostname to the console as a log argument', () => {

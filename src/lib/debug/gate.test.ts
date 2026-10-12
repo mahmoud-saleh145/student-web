@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   PRODUCTION_HOSTS,
+  debugErrorToken,
   debugGate,
   redactUrl,
   type DebugGateInput,
@@ -184,4 +185,21 @@ test('an unknown initDataType must not pass through as a raw string', () => {
   assert.equal(initDataTypeToken(''), 'NONE');
   assert.equal(initDataTypeToken(undefined), 'NONE');
   assert.equal(initDataTypeToken(42), 'NONE');
+});
+
+test('debugErrorToken reports only the error class name, never the message', () => {
+  assert.equal(debugErrorToken(new TypeError('x')), 'TypeError');
+  const chunk = new Error('Loading chunk 123 failed. (https://preview.example/_next/static/chunks/a.js?token=SECRET)');
+  chunk.name = 'ChunkLoadError';
+  assert.equal(debugErrorToken(chunk), 'ChunkLoadError');
+  assert.doesNotMatch(debugErrorToken(chunk), /https?:|token|SECRET|chunk 123/);
+});
+
+test('debugErrorToken collapses odd names and non-Error throws', () => {
+  const odd = new Error('m');
+  odd.name = 'https://evil/x';
+  assert.equal(debugErrorToken(odd), 'Error');
+  assert.equal(debugErrorToken('string thrown'), 'Unknown');
+  assert.equal(debugErrorToken(undefined), 'Unknown');
+  assert.equal(debugErrorToken({ name: 'TypeError' }), 'Unknown');
 });
