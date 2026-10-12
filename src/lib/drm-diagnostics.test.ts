@@ -11,6 +11,7 @@ import {
   formatTrace,
   keySystemToken,
   licenceHttpStatusFromError,
+  nativeErrorClass,
   nativeErrorDomainCode,
   parseFairPlayDiagFlags,
   type TraceEntry,
@@ -126,3 +127,108 @@ describe('timestamped, counted trace', () => {
     assert.equal(appendTraceEvent([], 'X', -3)[0]!.firstMs, 0);
   });
 });
+
+describe('nativeErrorClass - fixed tokens only, never the message', () => {
+  it('reports DOMAIN when Safari gives an Apple error domain and code', () => {
+    assert.equal(nativeErrorClass('CMSampleBufferErrorDomain -12939.'), 'DOMAIN');
+    // DOMAIN outranks keywords: it is the more specific fact.
+    assert.equal(
+      nativeErrorClass('CMSampleBufferErrorDomain -12978. Decryption failed'),
+      'DOMAIN',
+    );
+  });
+
+  it('reports KEY for key/encryption/licence wording', () => {
+    assert.equal(nativeErrorClass('Key request is not supported'), 'KEY');
+    assert.equal(nativeErrorClass('Decryption failed'), 'KEY');
+    assert.equal(nativeErrorClass('FairPlay licence error'), 'KEY');
+    assert.equal(nativeErrorClass('content key unavailable'), 'KEY');
+  });
+
+  it('reports DECODE for plain decode wording', () => {
+    assert.equal(nativeErrorClass('Decode error'), 'DECODE');
+    assert.equal(
+      nativeErrorClass('The media resource indicated by the src attribute could not be decoded.'),
+      'DECODE',
+    );
+  });
+
+  it('reports NETWORK for transport wording', () => {
+    assert.equal(nativeErrorClass('A network error caused the media download to fail'), 'NETWORK');
+  });
+
+  it('reports UNSUPPORTED only for explicit refusal wording', () => {
+    assert.equal(nativeErrorClass('Media type not supported'), 'UNSUPPORTED');
+    assert.equal(nativeErrorClass('no supported source'), 'UNSUPPORTED');
+  });
+
+  it('reports UNMAPPED rather than guessing, for a message we cannot classify', () => {
+    // The honest default. Safari's prose varies by build and this must not
+    // silently become a conclusion.
+    assert.equal(nativeErrorClass('something unexpected happened'), 'UNMAPPED');
+    assert.equal(nativeErrorClass('¯\\_(?)_/¯'), 'UNMAPPED');
+  });
+
+  it('reports NONE when there is no usable message', () => {
+    for (const bad of [null, undefined, '', 0, 42, true, {}, [], () => {}]) {
+      assert.equal(nativeErrorClass(bad), 'NONE', `for ${String(bad)}`);
+    }
+  });
+
+  it('CANNOT emit a codec or format verdict', () => {
+    // Deliberate limitation. Nothing in MediaError distinguishes "unsupported
+    // codec" from "key not ready yet", so there is no such token. If a future
+    // change adds one, this test fails and forces the author to justify it.
+    const verdicts = new Set([
+      nativeErrorClass('unsupported codec'),
+      nativeErrorClass('bad container format'),
+      nativeErrorClass('codec not available'),
+      nativeErrorClass('format error'),
+    ]);
+    for (const v of verdicts) {
+      assert.ok(
+        ['UNSUPPORTED', 'UNMAPPED'].includes(v),
+        `must not claim a codec/format cause, got ${v}`,
+      );
+    }
+  });
+
+  it('NEVER leaks the message, a URL, a token or an skd value', () => {
+    const hostile = [
+      'Decode error https://video.gumlet.io/abc/main.m3u8?exp=1&sig=SECRETSIG',
+      'key skd://zWJlFKVhU9iD73PB9XEQ== rejected for asset token=eyJhbGciOi',
+      'https://user:pw@example.com/licence?token=abc decode',
+      'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SIGNATURE network error',
+      '-----BEGIN CERTIFICATE-----MIIB decode',
+    ];
+    for (const m of hostile) {
+      const out = nativeErrorClass(m);
+      assert.ok(ALLOWED.has(out), `unexpected token ${out} for ${m}`);
+      const serialised = JSON.stringify(out);
+      assert.doesNotMatch(serialised, /https?:|gumlet|skd:|token|sig|Bearer|BEGIN|eyJ|[A-Za-z0-9+/]{16,}/);
+    }
+  });
+
+  it('always returns one of the declared tokens', () => {
+    const inputs = [
+      'Decode error',
+      'key error',
+      'network',
+      'unsupported',
+      'CMSampleBufferErrorDomain -12939',
+      'gibberish',
+      '',
+      null,
+    ];
+    for (const i of inputs) assert.ok(ALLOWED.has(nativeErrorClass(i)));
+  });
+});
+const ALLOWED = new Set([
+  'NONE',
+  'DOMAIN',
+  'KEY',
+  'UNSUPPORTED',
+  'DECODE',
+  'NETWORK',
+  'UNMAPPED',
+]);

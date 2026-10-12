@@ -418,12 +418,23 @@ it('still refuses to play without a licence or a manifest', () => {
     assert.match(code, /licenceHttpStatusFromError\(detail\)/);
   });
 
-  it('records the native media error only as a sanitised domain/code', () => {
-    // The raw MediaError.message may quote a URL; only the helper's output may
-    // reach the trace.
+  it('records the native media error only as sanitised tokens', () => {
+    // The raw MediaError.message may quote a URL, a signed query string or an
+    // skd:// value, so it must never be interpolated into a marker. It may only
+    // be PASSED to a classifier whose return value is a fixed token.
     assert.match(code, /nativeErrorDomainCode\(element\.error\?\.message\)/);
-    assert.doesNotMatch(code, /mark\([^)]*\.message/);
+    assert.match(code, /mark\(\x60NMSG_\$\{nativeErrorClass\(element\.error\?\.message\)\}\x60\)/);
     assert.match(code, /RS_\$\{element\.readyState\}_NS_\$\{element\.networkState\}/);
+
+    // The real invariant: no marker may contain the message itself. Any use of
+    // it inside mark() must be nested in a classifier call, never spliced in.
+    const markCalls = [...code.matchAll(/mark\(\x60[^\x60]*\x60\)/g)].map((m) => m[0]);
+    for (const call of markCalls) {
+      if (!call.includes('.message')) continue;
+      assert.match(call, /nativeErrorClass\(/, 'unclassified message in a marker: ' + call);
+    }
+    assert.doesNotMatch(code, /\$\{element\.error\?*\.message\}/);
+    assert.doesNotMatch(code, /\$\{(?:e|err|error)\.message\}/);
   });
 
   it('decodes the MediaError on the load() rejection path too', () => {

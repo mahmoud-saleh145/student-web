@@ -86,6 +86,68 @@ export function nativeErrorDomainCode(message: unknown): string | null {
 }
 
 /**
+ * What KIND of failure a native `MediaError.message` describes, as a fixed token.
+ *
+ * WHY THIS IS SO CONSERVATIVE
+ *
+ * Safari surfaces most decode failures as a generic "Decode error" or as prose
+ * that quotes the offending source URL. There is NO reliable browser field that
+ * separates "this content is in a codec or container Safari cannot play" from
+ * "this content is fine but the decryption key has not arrived". So there is
+ * deliberately NO codec or format category here: claiming one would turn a
+ * guess into a log line that later reads like a finding.
+ *
+ * What can be said honestly is which *subject* the message names. These are
+ * keyword categories, checked in a fixed order, and they are the minimum that
+ * still separates the two live hypotheses: a message about keys versus a
+ * message about decoding generally.
+ *
+ * `DOMAIN` outranks the keywords because an Apple error domain plus integer is
+ * strictly more specific than any keyword. What that integer MEANS is not
+ * interpreted here - `nativeErrorDomainCode` reports the pair verbatim and
+ * nothing more. Do not map CoreMedia codes to causes without a reference.
+ *
+ * `UNMAPPED` is the honest default: a message existed, it just did not say
+ * anything we are prepared to classify.
+ */
+export type NativeErrorClass =
+  | 'NONE'
+  | 'DOMAIN'
+  | 'KEY'
+  | 'UNSUPPORTED'
+  | 'DECODE'
+  | 'NETWORK'
+  | 'UNMAPPED';
+
+const NATIVE_ERROR_CLASS_RULES: ReadonlyArray<{ token: NativeErrorClass; test: RegExp }> = [
+  // Keyed first: a key-related decode failure is the case worth knowing.
+  { token: 'KEY', test: /\b(?:decrypt\w*|encrypt\w*|fairplay|licen[sc]e\w*|keys?|content key|sample (?:data|buffer|description))\b/i },
+  // Safari's explicit refusals. Never inferred from the media error code alone.
+  { token: 'UNSUPPORTED', test: /\b(not supported|unsupported|cannot (?:open|load|decode)|no supported source|could not be (?:opened|played))\b/i },
+  { token: 'DECODE', test: /\bdecod\w*\b/i },
+  { token: 'NETWORK', test: /\b(network|download|fetch|timeout|timed out|could not be loaded)\b/i },
+];
+
+/**
+ * Classify a native `MediaError.message` into a fixed token.
+ *
+ * The message itself is NEVER returned, embedded or logged - it routinely
+ * contains the source URL. Only one of a small set of constants comes back, so
+ * a URL, a signed query string, a licence token or an `skd://` value cannot
+ * reach a trace, a screenshot or a console log through this function.
+ */
+export function nativeErrorClass(message: unknown): NativeErrorClass {
+  if (typeof message !== 'string' || message.length === 0) return 'NONE';
+  // Reuse the domain probe so `DOMAIN` and `NERR_*` can never disagree.
+  if (nativeErrorDomainCode(message) !== null) return 'DOMAIN';
+  const head = message.slice(0, 2000);
+  for (const rule of NATIVE_ERROR_CLASS_RULES) {
+    if (rule.test.test(head)) return rule.token;
+  }
+  return 'UNMAPPED';
+}
+
+/**
  * HTTP status of a failed licence request, from a Shaka error detail.
  *
  * Shaka reports it as LICENSE_REQUEST_FAILED (6007) wrapping BAD_HTTP_STATUS

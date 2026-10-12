@@ -35,6 +35,7 @@ import {
   formatTrace,
   keySystemToken,
   licenceHttpStatusFromError,
+  nativeErrorClass,
   nativeErrorDomainCode,
   parseFairPlayDiagFlags,
   type TraceEntry,
@@ -138,6 +139,11 @@ export default function DrmVideo({
       if (where === 'ERR') {
         const native = nativeErrorDomainCode(element.error?.message);
         if (native) mark(`NERR_${native}`);
+        // Subject of the native message as a FIXED token. The message itself
+        // quotes the source URL, so it is classified and dropped - never
+        // returned, logged or rendered. See lib/drm-diagnostics.ts for why
+        // there is deliberately no codec/format category.
+        mark(`NMSG_${nativeErrorClass(element.error?.message)}`);
         mark(`RS_${element.readyState}_NS_${element.networkState}`);
       }
     },
@@ -614,12 +620,19 @@ export default function DrmVideo({
             </p>
           ) : null}
           {trace.length ? (
-            <p
+            <div
               data-drm-trace={formatTrace(trace, '>')}
-              className="max-w-md font-mono text-[10px] tracking-wider text-white/35 select-none"
+              className="max-h-40 max-w-md overflow-y-auto whitespace-pre break-all font-mono text-[11px] leading-tight tracking-wider text-white/45 select-none"
             >
-              {formatTrace(trace, ' > ')}
-            </p>
+              {/* One marker per line. The trace is the only DRM telemetry a
+                  student can read back (there is no console on a phone), and as
+                  a single wrapped paragraph it collided with the watermark -
+                  markers went missing and timestamps looked non-monotonic. Each
+                  entry is its own line so `TOKEN@ms` and its `xN` count can
+                  never be split or misread. `whitespace-pre` preserves the
+                  newlines; `break-all` keeps a long token inside the box. */}
+              {formatTrace(trace, '\n')}
+            </div>
           ) : null}
           <p className="max-w-md text-[11px] text-white/40">
             This lesson is DRM-protected. Protected video cannot be shown in this browser or on this device.
