@@ -4,6 +4,7 @@ import { Cairo, Inter } from 'next/font/google';
 import { getSessionUser } from '@/lib/session';
 
 import './globals.css';
+import { DebugBoot } from '@/components/debug/DebugBoot';
 import { Providers } from './providers';
 
 /**
@@ -87,6 +88,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script dangerouslySetInnerHTML={{ __html: BOOT_SCRIPT }} />
       </head>
       <body>
+        {/* Temporary, Preview-only FairPlay debug console. Renders nothing on
+            Production: the gate needs a build-time flag AND a preview host. */}
+        <DebugBoot />
         <Providers initialUser={user}>{children}</Providers>
       </body>
     </html>

@@ -276,8 +276,9 @@ export type InitDataTransform<DrmInfo> = (
  *    (`ERR_FP_NO_SKD_URI`, no licence request - real-device trace 2026-10-12).
  *
  * Delegating to the default instead of re-implementing its polyfill check keeps
- * the decision with the library that owns it. Only the init-data TYPE (a fixed
- * EME token such as `skd`) is reported; the init-data bytes are never read.
+ * the decision with the library that owns it. Only the init-data TYPE is
+ * reported, clamped to a fixed token by `initDataTypeToken`; the init-data bytes
+ * are never read.
  */
 export function traceInitDataTransform<DrmInfo>(
   shakaDefault: InitDataTransform<DrmInfo>,

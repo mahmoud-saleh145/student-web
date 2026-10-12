@@ -9,6 +9,7 @@ import {
   fairPlayConfigTokens,
   fairPlayKeySystems,
   formatTrace,
+  initDataTypeToken,
   keySystemToken,
   licenceHttpStatusFromError,
   nativeErrorClass,
@@ -104,6 +105,45 @@ describe('key system token', () => {
   });
 });
 
+describe('init data type token', () => {
+  it('maps the registered EME init-data types to fixed tokens', () => {
+    // `skd` is the whole point: it is the token that identifies FairPlay
+    // signalling, and the value behind `IDT_skd` in every device trace.
+    // Tokens are the canonical lower-case names so traces stay comparable with
+    // every earlier device trace (`ENC_skd`, `IDT_skd`).
+    assert.equal(initDataTypeToken('skd'), 'skd');
+    assert.equal(initDataTypeToken('sinf'), 'sinf');
+    assert.equal(initDataTypeToken('cenc'), 'cenc');
+    assert.equal(initDataTypeToken('keyids'), 'keyids');
+    assert.equal(initDataTypeToken('webm'), 'webm');
+  });
+
+  it('is case-insensitive, but always emits the fixed canonical token', () => {
+    assert.equal(initDataTypeToken('SKD'), 'skd');
+    assert.equal(initDataTypeToken('Sinf'), 'sinf');
+    assert.equal(initDataTypeToken('Cenc'), 'cenc');
+  });
+
+  it('collapses anything unrecognised to OTHER rather than echoing it', () => {
+    // The value arrives from the browser and its shape is a convention, not a
+    // guarantee. `IDT_*` / `ENC_*` used to interpolate it raw, which put an
+    // unvalidated runtime string into the diagnostic console. These are the
+    // shapes that must now collapse: a URI, a key-adjacent value, and prose.
+    for (const raw of ['skd://content-id', 'x-payload', 'eyJhbGciOi', 'skd with spaces', 'skd;x', 'sinf ']) {
+      assert.equal(initDataTypeToken(raw), 'OTHER', JSON.stringify(raw));
+    }
+  });
+
+  it('reports NONE for a missing, empty or non-string type', () => {
+    // Empty was `NONE` before the clamp (`type || 'NONE'`); kept for comparison.
+    assert.equal(initDataTypeToken(''), 'NONE');
+    assert.equal(initDataTypeToken(undefined), 'NONE');
+    assert.equal(initDataTypeToken(null), 'NONE');
+    assert.equal(initDataTypeToken(42), 'NONE');
+    assert.equal(initDataTypeToken({}), 'NONE');
+  });
+});
+
 describe('timestamped, counted trace', () => {
   it('records the first time and counts repeats instead of dropping them', () => {
     let t: TraceEntry[] = [];
@@ -166,7 +206,7 @@ describe('nativeErrorClass - fixed tokens only, never the message', () => {
     // The honest default. Safari's prose varies by build and this must not
     // silently become a conclusion.
     assert.equal(nativeErrorClass('something unexpected happened'), 'UNMAPPED');
-    assert.equal(nativeErrorClass('¯\\_(?)_/¯'), 'UNMAPPED');
+    assert.equal(nativeErrorClass('ï¿½\\_(?)_/ï¿½'), 'UNMAPPED');
   });
 
   it('reports NONE when there is no usable message', () => {

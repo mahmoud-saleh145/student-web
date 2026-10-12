@@ -169,6 +169,41 @@ export function keySystemToken(keySystem: unknown): string {
   return /^[a-z0-9._-]{1,40}$/i.test(keySystem) ? keySystem : 'OTHER';
 }
 
+/**
+ * The registered init-data types this app can legitimately see, plus the fixed
+ * tokens reported for them.
+ *
+ * `IDT_*` / `ENC_*` used to interpolate the raw `encrypted.initDataType` string
+ * straight into the token. That value arrives from the browser and its shape is
+ * a convention rather than a guarantee, so echoing it verbatim contradicted this
+ * module's own contract ("fixed token, small integer, or pattern-checked
+ * identifier") and put an unvalidated runtime string into a diagnostic console.
+ *
+ * It is now clamped: a known type maps to a fixed token, anything unrecognised
+ * maps to `OTHER`. This keeps the diagnostic value - knowing `skd` rather than
+ * `cenc` or `keyids` is exactly what identifies the FairPlay signalling - without
+ * passing through an arbitrary string.
+ *
+ * The tokens are the canonical lower-case type names, so traces stay directly
+ * comparable with every earlier device trace (`ENC_skd`, `IDT_skd`). `sinf` is
+ * the other FairPlay type WebKit reports (shaka 4.11.7 probes FairPlay with
+ * `initDataTypes: ['cenc', 'sinf', 'skd']`). A missing or empty type is `NONE`,
+ * as it was before the clamp.
+ */
+const INIT_DATA_TYPES: Readonly<Record<string, string>> = {
+  skd: 'skd',
+  sinf: 'sinf',
+  cenc: 'cenc',
+  keyids: 'keyids',
+  webm: 'webm',
+};
+
+/** Reduce an EME init-data type to a fixed token, `NONE`, or `OTHER`. */
+export function initDataTypeToken(initDataType: unknown): string {
+  if (typeof initDataType !== 'string' || initDataType.length === 0) return 'NONE';
+  return INIT_DATA_TYPES[initDataType.toLowerCase()] ?? 'OTHER';
+}
+
 // ---------------------------------------------------------------------------
 // Timestamped, counted trace
 // ---------------------------------------------------------------------------

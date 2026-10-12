@@ -20,6 +20,9 @@ import {
   streamingConfigForNativeHls,
 } from '@/lib/fairplay-native-hls';
 import { Watermark } from '@/components/protection/Watermark';
+
+import { redactUrl } from '@/lib/debug/gate';
+import { debugSinkAttached, emit } from '@/lib/debug/sink';
 import {
   buildFairPlayLicenseRequest,
   fairPlayStageFromErrorDetail,
@@ -33,6 +36,7 @@ import {
   fairPlayConfigTokens,
   fairPlayKeySystems,
   formatTrace,
+  initDataTypeToken,
   keySystemToken,
   licenceHttpStatusFromError,
   nativeErrorClass,
@@ -124,6 +128,9 @@ export default function DrmVideo({
   const mark = React.useCallback((token: string) => {
     const atMs = performance.now() - traceStartRef.current;
     setTrace((prev) => appendTraceEvent(prev, token, atMs));
+    // Mirror to the Preview-only debug console. `token` is already a fixed
+    // literal or a MediaError number; no payload ever reaches here.
+    emit({ t: atMs, k: 'trace', v: token });
   }, []);
 
   /**
@@ -365,15 +372,16 @@ export default function DrmVideo({
           // `initDataTransform` only there, never from `advanced`).
           //
           // It changes nothing about the init data. It records which init-data
-          // type Safari delivered (`IDT_*`) and hands the call to Shaka's own
-          // default, which passes Modern EME init data through untouched and
-          // rebuilds the legacy Apple layout only when Shaka's legacy media-keys
-          // polyfill is installed. See `traceInitDataTransform` in
-          // lib/fairplay.ts for why our previous rebuild was wrong on this path.
+          // type Safari delivered (`IDT_*`, clamped to a fixed token) and hands
+          // the call to Shaka's own default, which passes Modern EME init data
+          // through untouched and rebuilds the legacy Apple layout only when
+          // Shaka's legacy media-keys polyfill is installed. See
+          // `traceInitDataTransform` in lib/fairplay.ts for why our previous
+          // rebuild was wrong on this path.
           ...(isFairPlay && shakaDefaultInitDataTransform
             ? {
                 initDataTransform: traceInitDataTransform(shakaDefaultInitDataTransform, (initDataType) =>
-                  mark(`IDT_${initDataType || 'NONE'}`),
+                  mark(`IDT_${initDataTypeToken(initDataType)}`),
                 ),
               }
             : {}),
@@ -393,11 +401,13 @@ export default function DrmVideo({
         // produced LIC_REQ cannot have come from FairPlay signalling.
         //
         // Observes only. Nothing about the event is modified, and `initData` is
-        // deliberately never read: it is key-adjacent material. Only the fixed
-        // `initDataType` string is reported, which is a constant per spec.
+        // deliberately never read: it is key-adjacent material. Only the
+        // init-data TYPE is reported, clamped to a fixed token by
+        // `initDataTypeToken` so no unvalidated runtime string reaches the
+        // trace or the debug console.
         video?.addEventListener('encrypted', (event: Event) => {
           const type = (event as Event & { initDataType?: string }).initDataType;
-          mark(`ENC_${type || 'NONE'}`);
+          mark(`ENC_${initDataTypeToken(type)}`);
           // Registered before Shaka's own listener, so this is the state Safari
           // had when it announced encrypted media.
           markMediaState('ENC');
@@ -425,6 +435,14 @@ export default function DrmVideo({
         ne.registerRequestFilter((type, request) => {
           if (type !== shaka.net.NetworkingEngine.RequestType.LICENSE) return;
           mark('LIC_REQ');
+          // origin + pathname ONLY. redactUrl strips the signed query
+          // entirely, so no credential can reach the debug console. The
+          // request BODY is the SPC and is never read. Guarded so the URL is
+          // not even parsed unless a console is actually attached, which keeps
+          // the production path byte-for-byte as it was.
+          if (debugSinkAttached()) {
+            emit({ k: 'licence-url', v: redactUrl(request.uris?.[0]) });
+          }
           request.headers['Content-Type'] = 'application/json';
           request.body = buildFairPlayLicenseRequest(request.body);
         });
@@ -432,6 +450,27 @@ export default function DrmVideo({
           if (type !== shaka.net.NetworkingEngine.RequestType.LICENSE) return;
           mark('LIC_RES');
           if (typeof response.status === 'number') mark(`LIC_HTTP_${response.status}`);
+          // Status and duration only. `timeMs` is Shaka's own measurement of
+          // the round trip, so no client-side timing state is needed.
+          // `response.data` is the CKC: never logged, and never measured
+          // beyond its byte length.
+          emit({
+            k: 'licence',
+            v: 'res',
+            n: typeof response.status === 'number' ? response.status : 0,
+          });
+          emit({ k: 'licence', v: 'ms', n: Math.round(response.timeMs ?? 0) });
+          emit({ k: 'licence', v: 'res_body_bytes', n: response.data?.byteLength ?? 0 });
+          // Success/failure of the exchange. `drmsessionupdate` (LIC_OK) is what
+          // marks a successful CKC handoff, so this is only a provisional
+          // transport-level outcome: a 200 with a re-encrypted body does not mean
+          // the CDM accepted the key. That is why it is reported separately.
+          emit({
+            k: 'licence',
+            v: typeof response.status === 'number' && response.status >= 200 && response.status < 300
+              ? 'transport_ok'
+              : 'transport_failed',
+          });
           response.data = parseFairPlayLicenseResponse(response.data);
         });
       } else {
@@ -452,9 +491,26 @@ export default function DrmVideo({
       // --- lifecycle --------------------------------------------------------
       player.addEventListener('error', (event: unknown) => {
         if (disposed) return;
-        const detail = (event as { detail?: { code?: number; message?: string; data?: unknown } }).detail;
+        const detail = (
+          event as {
+            detail?: {
+              code?: number;
+              message?: string;
+              data?: unknown;
+              category?: number;
+              severity?: number;
+            };
+          }
+        ).detail;
         const code = detail?.code ?? 0;
         const name = Object.entries(shaka.util.Error.Code).find(([, v]) => v === code)?.[0] ?? 'UNKNOWN';
+        // Safe Shaka error identity: category and severity are small enumerated
+        // integers, never message text. This is the "safe error categories and
+        // codes" the debug report needs, and it is already the same data the
+        // in-app trace classifies.
+        emit({ k: 'shaka', v: name, n: code });
+        emit({ k: 'shaka-cat', v: name, n: typeof detail?.category === 'number' ? detail.category : -1 });
+        emit({ k: 'shaka-sev', v: name, n: typeof detail?.severity === 'number' ? detail.severity : -1 });
 
         // A licence rejection is a distinct, reportable class of failure: it
         // means the backend issued a token but the CDM was refused.
@@ -555,6 +611,16 @@ export default function DrmVideo({
       video?.addEventListener('loadedmetadata', () => mark('META'));
       video?.addEventListener('canplay', () => mark('CANPLAY'));
       video?.addEventListener('playing', () => mark('PLAYING'));
+      // Native media-state transitions, beyond the ones above. Each carries no
+      // payload, only a fixed token. `stalled`/`suspend`/`emptied` separate a
+      // network/key stall from a playback error on a failure report, and
+      // `waiting` is distinct from `waitingforkey`.
+      video?.addEventListener('loadeddata', () => mark('NAT_DATA'));
+      video?.addEventListener('stalled', () => mark('NAT_STALLED'));
+      video?.addEventListener('suspend', () => mark('NAT_SUSPEND'));
+      video?.addEventListener('emptied', () => mark('NAT_EMPTIED'));
+      video?.addEventListener('waiting', () => mark('NAT_WAITING'));
+      video?.addEventListener('ratechange', () => mark('NAT_RATE'));
 
       // Captions: Gumlet delivers them as URLs, so push them into Shaka rather
       // than into <track> elements, which Shaka does not read.

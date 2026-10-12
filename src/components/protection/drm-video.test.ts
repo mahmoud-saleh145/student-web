@@ -399,7 +399,11 @@ it('still refuses to play without a licence or a manifest', () => {
     // after the player has been configured.
     const fpBranch = code.slice(code.indexOf('if (isFairPlay) {', code.indexOf('player.configure({')));
     assert.match(fpBranch.slice(0, 900), /addEventListener\('encrypted'/);
-    assert.match(code, /ENC_\$\{type \|\| 'NONE'\}/);
+    // The init-data type must be CLAMPED to a fixed token, not echoed raw: it is
+    // a browser-supplied string with no guaranteed shape, so it must not reach
+    // the trace or the debug console verbatim.
+    assert.match(code, /ENC_\$\{initDataTypeToken\(type\)\}/);
+    assert.doesNotMatch(code, /ENC_\$\{type \|\|/);
     assert.doesNotMatch(code, /initData\s*as\s*Uint8Array/);
     // Never read the event's init data, even for diagnostics.
     assert.doesNotMatch(code, /event as Event & \{ initData\??:/);
