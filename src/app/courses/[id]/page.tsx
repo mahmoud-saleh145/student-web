@@ -7,12 +7,12 @@ import * as React from 'react';
 import { Avatar, Badge, Button, Card, CardTitle, KeyValue, ProgressBar, Segmented } from '@/components/ui/core';
 import { AppShell, ErrorState, PageHeader, toUserMessage } from '@/components/ui/feedback';
 import { Input, Sheet } from '@/components/ui/forms';
-import { CheckIcon, ClockIcon, FileIcon, LayersIcon, LockIcon, PlayIcon, ShieldIcon, UserIcon } from '@/components/ui/icons';
+import { CheckIcon, ClockIcon, FileIcon, LayersIcon, LockIcon, PlayIcon, ShieldIcon } from '@/components/ui/icons';
 import { SupportLinks } from '@/components/support/SupportLinks';
 import { useCourse, useCourseParts, useEnroll, useJoinOptions, useRedeemCourseCode } from '@/features/api';
 import { buildCurriculumGroups, type CurriculumGroup } from '@/features/curriculum';
 import { ACCESS_BADGE, courseAccessFlags, joinLabel, joinSheetActions } from '@/lib/course-access';
-import { formatCompact, formatDate, formatDuration, formatMoney, formatNumber, localizedName } from '@/lib/format';
+import { formatDate, formatDuration, formatMoney, formatNumber, localizedName } from '@/lib/format';
 import { useSession, useTranslation } from '@/lib/session-context';
 import { cn } from '@/lib/utils';
 import { toast } from '@/store/stores';
@@ -109,12 +109,6 @@ export default function CourseDetailPage() {
                 {course.academicYear ? <Badge label={localizedName(course.academicYear, language)} tone="primary" /> : null}
                 {accessBadge ? <Badge label={t(accessBadge.key)} tone={accessBadge.tone} /> : null}
                 <Badge label={formatDuration(course.totalDurationSeconds, language)} />
-                {course.studentCount ? (
-                  <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-muted">
-                    <UserIcon size={15} />
-                    {formatCompact(course.studentCount, language)}
-                  </span>
-                ) : null}
               </>
             }
           />
