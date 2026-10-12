@@ -157,6 +157,68 @@ it('still refuses to play without a licence or a manifest', () => {
     assert.match(DrmVideo, /if \(!manifestUrl\)/);
   });
 
+  it('never attaches MSE on the FairPlay path - that is the MEDIA_3 regression', () => {
+    // `player.attach()` moves the media element under Media Source Extensions
+    // control. Shaka supports FairPlay ONLY through native `src=` playback, so
+    // calling attach() unconditionally disabled the only supported FairPlay path
+    // on the only platform with no alternative CDM. The symptom was a DECODE
+    // failure (MediaError.code 3) AFTER a successful licence exchange.
+    //
+    // This asserts the ordering rather than the presence of attach(): attach()
+    // must exist for the Widevine path, and must be unreachable for FairPlay.
+    const usesNativeFlag = /const useNativeHls\s*=\s*needsNativeFairPlayHls/.test(code);
+    assert.ok(
+      usesNativeFlag,
+      'component must derive the native-HLS decision from the tested helper',
+    );
+
+    const guardedAttach = /if\s*\(\s*!useNativeHls\s*\)\s*\{\s*await player\.attach\(video\);\s*\}/.test(
+      code,
+    );
+    assert.ok(
+      guardedAttach,
+      'player.attach() must be guarded by !useNativeHls; an unconditional attach is the MEDIA_3 cause',
+    );
+
+    // The helper must be consulted, not a hardcoded 'ios' check.
+    assert.match(code, /needsNativeFairPlayHls/);
+    assert.doesNotMatch(code, /userAgent|navigator\.platform/);
+  });
+
+  it('configures preferNativeHls so Shaka hands HLS to Safari', () => {
+    assert.match(code, /streamingConfigForNativeHls\(\)/);
+    assert.match(code, /player\.configure\(streamingConfigForNativeHls\(\)\)/);
+  });
+
+  it('keeps both FairPlay key systems and the certificate on the native path', () => {
+    // Native playback still needs a licence server and a certificate: the EME
+    // exchange is unchanged, only the demux path differs. Losing either here
+    // would reintroduce a licence failure instead of fixing the decode one.
+    assert.match(code, /\[fairplay\]:\s*drm\.licenseUrl/);
+    assert.match(code, /serverCertificateUri:\s*drm\.certificateUrl/);
+  });
+
+  it('does not weaken DRM on the native path', () => {
+    // No fallback to an unprotected source, no licence bypass.
+    assert.doesNotMatch(code, /drmOnly|allowUnencrypted|skipDrm/);
+    // The manifest URL is still the signed one from the ticket.
+    assert.match(code, /player\.load\(manifestUrl\)/);
+  });
+
+  it('wires media events from the real element when there is no MSE attachment', () => {
+    // getMediaElement() resolves only an attached element; on the native path
+    // it would be null and playback telemetry would silently stop on iOS.
+    assert.match(code, /useNativeHls\s*\?\s*video\s*:\s*\(player\.getMediaElement\(\)/);
+  });
+
+  it('skips addTextTrackAsync on the native path where it cannot exist', () => {
+    assert.match(code, /!useNativeHls\s*&&\s*captionsEnabled/);
+  });
+
+  it('keeps the existing cleanup safe for an unattached player', () => {
+    assert.match(code, /destroy\(\)\.catch\(\(\)\s*=>\s*undefined\)/);
+  });
+
   it('destroys the player on cleanup', () => {
     assert.match(DrmVideo, /playerRef\.current\.destroy\(\)/);
   });

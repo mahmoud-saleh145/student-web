@@ -220,7 +220,23 @@ export default function LessonPage() {
           </div>
         </div>
 
-        <aside className="lg:sticky lg:top-20 lg:self-start">
+        {/* `min-w-0` mirrors the main column above, and is load-bearing for the same
+            reason as the course page's sidebar.
+
+            A grid item's `min-width` defaults to `auto`, so this element's
+            automatic minimum size is its min-content width. The curriculum
+            outline below holds lesson titles; each row truncates, but that only
+            contains a title inside its own row - the row still reports its full
+            min-content, and that propagates up through the block ancestors to
+            here.
+
+            Below `lg` the two columns stack into one implicit `auto` track, so
+            that minimum becomes the track's size. A course with a long lesson
+            title (Chemistry: "Part 2 (Ideal Gas problems and introduction to
+            mixture of gazes)") pushed the track to 425px inside a 310px column,
+            dragging the document to 442px and scrolling the page sideways. Above
+            `lg` the track is pinned to 320px, so desktop is unaffected. */}
+        <aside className="min-w-0 lg:sticky lg:top-20 lg:self-start">
           <Card>
             <CardTitle>{t('web.curriculum')}</CardTitle>
             {groups.every((g) => g.sections.length === 0) ? (

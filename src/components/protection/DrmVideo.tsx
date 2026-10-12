@@ -15,6 +15,10 @@ import * as React from 'react';
 import * as shaka from 'shaka-player';
 import 'shaka-player/dist/controls.css';
 
+import {
+  needsNativeFairPlayHls,
+  streamingConfigForNativeHls,
+} from '@/lib/fairplay-native-hls';
 import { Watermark } from '@/components/protection/Watermark';
 import {
   buildFairPlayLicenseRequest,
@@ -144,7 +148,6 @@ export default function DrmVideo({
       const player = new shaka.Player();
       playerRef.current = player;
       video = videoRef.current;
-      await player.attach(video);
 
       const widevine = 'com.widevine.alpha';
       const fairplay = 'com.apple.fps';
@@ -152,6 +155,28 @@ export default function DrmVideo({
       // its signalling, so both get a licence server and the certificate.
       const fairplayLegacy = 'com.apple.fps.1_0';
       const isFairPlay = drm.scheme === 'fairplay';
+
+      // FairPlay on Safari: use the native HLS engine.
+      //
+      // Shaka supports FairPlay ONLY through native `src=` playback, never
+      // through MSE. `attach()` is what moves the element under MSE control, so
+      // it must NOT be called on this path - doing so is what produced MEDIA_3
+      // (a decode failure AFTER a successful licence exchange, because the
+      // cbcs samples could not be decrypted by a path FairPlay never supports).
+      //
+      // `preferNativeHls` asks Shaka to hand the manifest to Safari and let it
+      // drive, which is the supported route. DRM is NOT weakened: the same
+      // signed manifest, licence server and certificate are used, and the EME
+      // exchange is performed by the platform.
+      const useNativeHls = needsNativeFairPlayHls(drm);
+      if (useNativeHls) {
+        mark('NATIVE_HLS');
+        player.configure(streamingConfigForNativeHls());
+      }
+
+      if (!useNativeHls) {
+        await player.attach(video);
+      }
 
       player.configure({
         drm: {
@@ -342,7 +367,10 @@ export default function DrmVideo({
 
       // Captions: Gumlet delivers them as URLs, so push them into Shaka rather
       // than into <track> elements, which Shaka does not read.
-      if (captionsEnabled && captions.length > 0) {
+      //
+      // Skipped on the native-FairPlay path: `addTextTrackAsync` only exists on
+      // an attached player, and a missing caption must never block playback.
+      if (!useNativeHls && captionsEnabled && captions.length > 0) {
         for (const c of captions) {
           try {
             await player.addTextTrackAsync(c.url, c.language, 'subtitles', c.label, c.isDefault ? 'default' : 'none');
@@ -352,10 +380,15 @@ export default function DrmVideo({
         }
       }
 
-      player.getMediaElement()?.addEventListener('ended', () => cbs.current.onEnded?.());
-      player.getMediaElement()?.addEventListener('play', () => cbs.current.onPlayback?.());
-      player.getMediaElement()?.addEventListener('pause', () => cbs.current.onPause?.());
-      player.getMediaElement()?.addEventListener('timeupdate', () => cbs.current.onTimeUpdate?.());
+      // `getMediaElement()` only resolves an ATTACHED element. On the native
+      // FairPlay path there is no MSE attachment, so the real element is used
+      // directly - otherwise playback telemetry and the ended/play/pause/
+      // timeupdate callbacks would silently stop firing on iOS.
+      const mediaElement = useNativeHls ? video : (player.getMediaElement() ?? video);
+      mediaElement?.addEventListener('ended', () => cbs.current.onEnded?.());
+      mediaElement?.addEventListener('play', () => cbs.current.onPlayback?.());
+      mediaElement?.addEventListener('pause', () => cbs.current.onPause?.());
+      mediaElement?.addEventListener('timeupdate', () => cbs.current.onTimeUpdate?.());
     })().catch((e: unknown) => {
       if (disposed) return;
       const msg = e instanceof Error ? e.message : String(e);
