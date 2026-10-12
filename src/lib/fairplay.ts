@@ -128,49 +128,6 @@ export function parseFairPlayLicenseResponse(
   return fromBase64(ckc).buffer as ArrayBuffer;
 }
 
-// ---------------------------------------------------------------------------
-// Content ID derivation from Gumlet's `skd://` signalling
-// ---------------------------------------------------------------------------
-
-/**
- * WHY A CUSTOM INIT-DATA TRANSFORM IS REQUIRED HERE
- *
- * Shaka 4.11.7's HLS parser maps `KEYFORMAT=com.apple.streamingkeydelivery`
- * to a DrmInfo like this:
- *
- *   keySystem        'com.apple.fps'
- *   initDataType     'sinf'
- *   initData         new Uint8Array(0)     <- EMPTY
- *   keySystemUris    Set { 'skd://<id>' }
- *
- * Shaka's DEFAULT init-data transform is guarded on `initDataType === 'skd'`,
- * a type only produced by the legacy Apple MediaKeys polyfill. This content
- * arrives as 'sinf', so the default returns the empty buffer untouched: no
- * content id is derived, `FairPlayUtils.initDataTransform` is never called, and
- * Safari builds a licence request for an empty content id that the server
- * cannot satisfy.
- *
- * So the content id has to come from `drmInfo.keySystemUris` instead. Shaka's
- * own FairPlay tutorial documents exactly this: when `initDataType != 'skd'`,
- * "it is possible to get the skd urls from drmInfo".
- */
-
-const SKD_PREFIX = 'skd://';
-
-/**
- * The only init-data type that may be rebuilt into the legacy Apple MediaKeys
- * layout (`[initDataSize][initData][contentIdSize][contentId][certSize][cert]`).
- *
- * Gumlet signals FairPlay with `KEYFORMAT=com.apple.streamingkeydelivery`, which
- * Shaka's HLS parser maps to Modern EME `com.apple.fps` with
- * `initDataType: 'sinf'`. Under Modern EME the browser consumes the `sinf`
- * carried in the CMAF init segment; substituting the legacy blob removes the key
- * identifier and leaves the track undecryptable. Shaka's own FairPlay tutorial
- * follows the same rule - it rebuilds only for 'skd' and returns everything else
- * untouched.
- */
-export const FAIRPLAY_LEGACY_INIT_DATA_TYPE = 'skd';
-
 /**
  * Extract the numeric media-element detail from a Shaka VIDEO_ERROR payload.
  *
@@ -239,10 +196,6 @@ export function videoErrorDetail(detail: {
  */
 export const FAIRPLAY_STAGE_PREFIX = '[drm-fp]';
 
-function stageError(code: string, message: string): Error {
-  return new Error(`${FAIRPLAY_STAGE_PREFIX}${code}: ${message}`);
-}
-
 /** Recover the stage code from a message, or null if it is not one of ours. */
 export function fairPlayStageFromMessage(message: unknown): string | null {
   const text =
@@ -270,10 +223,8 @@ export function fairPlayStageFromMessage(message: unknown): string | null {
  *
  * That made `fairPlayStageFromMessage(detail.message)` return null for exactly
  * the failure it exists to explain: the stage rendered as the generic
- * `INIT_DATA_TRANSFORM_ERROR` (6016) while the reason - no `skd://` URI, no
- * server certificate, no content id - was silently discarded. Every guard in
- * `createFairPlayInitDataTransform` throws in order precisely so the failing one
- * can be named, and this is where that name is read back.
+ * `INIT_DATA_TRANSFORM_ERROR` (6016) while the tagged reason was silently
+ * discarded. This is where a tagged reason is read back.
  *
  * Only the fixed `[A-Z_]+` token after our own prefix is ever returned; the
  * surrounding text is never propagated, since it could quote a URI.
@@ -294,122 +245,46 @@ export function fairPlayStageFromErrorDetail(detail: {
   return null;
 }
 
-/** The slice of `shaka.extern.DrmInfo` this module reads. */
-export type FairPlayDrmInfo = {
-  keySystemUris?: Set<string> | null;
-  serverCertificate?: Uint8Array | ArrayBuffer | null;
-};
+// ---------------------------------------------------------------------------
+// FairPlay init data
+// ---------------------------------------------------------------------------
 
-/** Injected so this module stays free of Shaka imports and stays unit-testable. */
-export type InitDataBuilder = (
+/** Shaka 4.11.7's `shaka.extern.InitDataTransform`, kept local so this module stays Shaka-free. */
+export type InitDataTransform<DrmInfo> = (
   initData: Uint8Array,
-  contentId: string,
-  cert: Uint8Array | ArrayBuffer,
+  initDataType: string,
+  drmInfo: DrmInfo,
 ) => Uint8Array;
 
 /**
- * Pull the `skd://` URI out of a DrmInfo's key-system URIs.
+ * Wrap Shaka's own default `drm.initDataTransform` so the trace can record which
+ * init-data type arrived, without changing what reaches `generateRequest`.
  *
- * Returns null when there is none, so the caller can fail explicitly instead of
- * proceeding with a guess. A bare `skd://` with no identifier is rejected too:
- * an empty content id is the exact failure this whole path exists to avoid.
+ * Why there is no FairPlay-specific rebuild here any more (verified against the
+ * shipped shaka-player 4.11.7):
+ *
+ *  - Shaka's default rebuilds `'skd'` init data into the legacy
+ *    `[skd][contentId][certificate]` layout ONLY when a media-keys polyfill is
+ *    installed (`Platform.isMediaKeysPolyfilled()`, i.e.
+ *    `window.shakaMediaKeysPolyfill`). The legacy Apple polyfill is not
+ *    registered with `shaka.polyfill.installAll()` and this app never installs
+ *    it, so iPhone Safari runs Modern EME and receives the `encrypted` event's
+ *    init data unchanged - which is what Modern EME FairPlay expects.
+ *  - On the native `src=` route the iPhone takes, Shaka builds the DrmInfo from
+ *    `drm.servers` and never sets `keySystemUris`. A transform that derives the
+ *    content id from `keySystemUris` therefore threw on every FairPlay play
+ *    (`ERR_FP_NO_SKD_URI`, no licence request - real-device trace 2026-10-12).
+ *
+ * Delegating to the default instead of re-implementing its polyfill check keeps
+ * the decision with the library that owns it. Only the init-data TYPE (a fixed
+ * EME token such as `skd`) is reported; the init-data bytes are never read.
  */
-export function findSkdUri(keySystemUris: Iterable<string> | null | undefined): string | null {
-  if (!keySystemUris) return null;
-  for (const uri of keySystemUris) {
-    if (typeof uri === 'string' && uri.startsWith(SKD_PREFIX) && uri.length > SKD_PREFIX.length) {
-      return uri;
-    }
-  }
-  return null;
-}
-
-/**
- * Content id carried by a Gumlet `skd://` URI: everything after the scheme.
- *
- * Verified against the installed Shaka 4.11.7: `defaultGetContentId` returns
- * exactly this for both the `skd://<id>` and `//<id>` forms (the polyfill strips
- * `skd:` before the transform sees it), with no decoding applied.
- */
-export function contentIdFromSkdUri(skdUri: string): string {
-  // Strip the scheme, then any authority slashes, so `skd://<id>`, the
-  // polyfill's `//<id>` and a bare `<id>` all normalise to the same value.
-  const id = skdUri.replace(/^skd:/i, '').replace(/^\/+/, '');
-  if (!id) {
-    throw stageError('NO_SKD_CONTENT_ID', 'FairPlay skd:// URI carried no content identifier');
-  }
-  return id;
-}
-
-/**
- * Whether this init-data type must be rebuilt into the legacy Apple MediaKeys
- * layout.
- *
- * Only `'skd'` may be. Gumlet ships HLS whose FairPlay entry is
- * `KEYFORMAT=com.apple.streamingkeydelivery`, which Shaka's HLS parser turns into
- * Modern EME: key system `com.apple.fps`, `initDataType: 'sinf'` and an EMPTY
- * init-data buffer, with the `skd://` content id on `drmInfo.keySystemUris`.
- *
- * Rebuilding a `sinf` payload is what caused `MEDIA_3`. The legacy layout is
- * `[len][initData][len][contentId][len][cert]`; running it over an empty buffer
- * discards the key id that the HLS `skd://` URI already supplied. The licence
- * exchange still succeeded, because Gumlet's licence URL is scoped by org and
- * asset rather than by key id - so the trace read
- * `LIC_REQ > LIC_RES > LOADED` and then the `cbcs` samples failed to decrypt,
- * surfacing as `MEDIA_3` with nothing pointing back at the licence.
- *
- * This is the same rule Shaka's own FairPlay tutorial applies, and the same rule
- * as `shaka.util.FairPlayUtils.initDataTransform`'s default.
- */
-export function shouldTransformFairPlayInitData(initDataType: string | null | undefined): boolean {
-  return initDataType === FAIRPLAY_LEGACY_INIT_DATA_TYPE;
-}
-
-/**
- * Build the `drm.initDataTransform` for the FairPlay branch.
- *
- * Configure this ONLY when the ticket's scheme is FairPlay. Widevine keeps
- * Shaka's default behaviour, which is correct for DASH PSSH content.
- *
- * Modern EME init data is returned UNCHANGED and the legacy builder is never
- * invoked - see {@link shouldTransformFairPlayInitData} for why. For the legacy
- * `'skd'` path, every failure throws with a specific message. There is
- * deliberately no fallback that returns `initData` untouched: that is the
- * silent-degradation shape this component refuses elsewhere, and it produces a
- * licence error that is indistinguishable from a server fault.
- *
- * @param build `shaka.util.FairPlayUtils.initDataTransform`, injected.
- */
-export function createFairPlayInitDataTransform(build: InitDataBuilder) {
-  return (
-    initData: Uint8Array,
-    initDataType: string,
-    drmInfo: FairPlayDrmInfo | null,
-  ): Uint8Array => {
-    // Modern EME (`sinf`) and any other non-legacy type must pass through
-    // untouched. Rebuilding it strips the key id and produces MEDIA_3.
-    if (!shouldTransformFairPlayInitData(initDataType)) {
-      return initData;
-    }
-
-    const skdUri = findSkdUri(drmInfo?.keySystemUris);
-    if (!skdUri) {
-      throw stageError(
-        'NO_SKD_URI',
-        'FairPlay init data carried no skd:// URI, so no content id could be derived',
-      );
-    }
-
-    const cert = drmInfo?.serverCertificate;
-    if (!cert || cert.byteLength === 0) {
-      // Shaka's own helper throws the same way (error 6015). Catching it here
-      // turns a numeric code into a stage that names the cause.
-      throw stageError(
-        'NO_CERTIFICATE',
-        'FairPlay init data requires a server certificate; none was fetched',
-      );
-    }
-
-    return build(initData, contentIdFromSkdUri(skdUri), cert);
+export function traceInitDataTransform<DrmInfo>(
+  shakaDefault: InitDataTransform<DrmInfo>,
+  onInitDataType: (initDataType: string) => void,
+): InitDataTransform<DrmInfo> {
+  return (initData, initDataType, drmInfo) => {
+    onInitDataType(initDataType);
+    return shakaDefault(initData, initDataType, drmInfo);
   };
 }

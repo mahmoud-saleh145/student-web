@@ -3,34 +3,16 @@ import { describe, it } from 'node:test';
 
 import {
   buildFairPlayLicenseRequest,
-  contentIdFromSkdUri,
-  createFairPlayInitDataTransform,
   fairPlayStageFromErrorDetail,
   fairPlayStageFromMessage,
-  findSkdUri,
   fromBase64,
   parseFairPlayLicenseResponse,
-  shouldTransformFairPlayInitData,
   toBase64,
+  traceInitDataTransform,
   videoErrorDetail,
-  type InitDataBuilder,
 } from './fairplay.ts';
 
 const bytes = (...values: number[]) => new Uint8Array(values);
-
-/**
- * Records what the injected legacy builder was handed, and returns a marker.
- * Shared across describes so every init-data test can assert the builder was -
- * or was NOT - reached.
- */
-const spyBuilder = () => {
-  const calls: Array<{ initData: Uint8Array; contentId: string; cert: Uint8Array }> = [];
-  const build: InitDataBuilder = (initData, contentId, cert) => {
-    calls.push({ initData, contentId, cert: cert as Uint8Array });
-    return new Uint8Array([1, 2, 3]);
-  };
-  return { calls, build };
-};
 
 /**
  * These lock the wire format to Gumlet's documented contract, taken from
@@ -110,241 +92,104 @@ describe('FairPlay SPC/CKC wire format', () => {
 });
 
 /**
- * Shaka's HLS parser hands FairPlay content through as `initDataType: 'sinf'`
- * with an EMPTY buffer, putting the `skd://` URI on `drmInfo.keySystemUris`.
- * Its default transform only fires for `'skd'`, so the content id has to come
- * from the key-system URI. These tests pin that derivation and, importantly,
- * that every missing-input case FAILS rather than degrading.
+ * The FairPlay init-data transform must not alter init data itself.
+ *
+ * Shaka 4.11.7's default already does the right thing: Modern EME (iPhone
+ * Safari) gets the `encrypted` event's init data unchanged, and the legacy Apple
+ * layout is rebuilt only when Shaka's legacy media-keys polyfill is installed.
+ * Our wrapper exists only to record the init-data TYPE for the on-screen trace.
+ *
+ * The previous transform rebuilt 'skd' itself and derived the content id from
+ * `drmInfo.keySystemUris`. On the native `src=` route Shaka never sets that
+ * field, so it threw on every FairPlay play (real iPhone trace 2026-10-12:
+ * `ENC_skd > IDT_skd > ERR_FP_NO_SKD_URI`, no licence request). The DrmInfo used
+ * below mirrors that real shape: no keySystemUris at all.
  */
-describe('FairPlay skd:// content id derivation', () => {
-  const CERT = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+describe('FairPlay init-data transform delegates to Shaka', () => {
+  /** DrmInfo as Shaka builds it for native src= playback: from drm.servers only. */
+  const srcEqualsDrmInfo = {
+    keySystem: 'com.apple.fps',
+    licenseServerUri: 'https://licence.example/x',
+    serverCertificate: new Uint8Array([1, 2, 3]),
+    serverCertificateUri: '',
+    initData: [],
+    keyIds: new Set<string>(),
+  };
 
-  it('finds the skd:// URI among other key-system URIs', () => {
-    const uris = new Set(['https://example.test/other', 'skd://CONTENTID1234567890abcd']);
-    assert.equal(findSkdUri(uris), 'skd://CONTENTID1234567890abcd');
+  const recordingDefault = () => {
+    const calls: Array<{ initData: Uint8Array; initDataType: string; drmInfo: unknown }> = [];
+    const result = new Uint8Array([7, 7, 7]);
+    const fn = (initData: Uint8Array, initDataType: string, drmInfo: unknown) => {
+      calls.push({ initData, initDataType, drmInfo });
+      return result;
+    };
+    return { calls, fn, result };
+  };
+
+  it("hands every argument to Shaka's default, untouched, and returns its result", () => {
+    const { calls, fn, result } = recordingDefault();
+    const initData = new Uint8Array([0x73, 0x6b, 0x64]);
+    const out = traceInitDataTransform(fn, () => {})(initData, 'skd', srcEqualsDrmInfo);
+
+    assert.equal(out, result, 'must return exactly what the default returned');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.initData, initData, 'same buffer instance, not a copy or rebuild');
+    assert.equal(calls[0]!.initDataType, 'skd');
+    assert.equal(calls[0]!.drmInfo, srcEqualsDrmInfo);
   });
 
-  it('returns null rather than guessing when there is no skd:// URI', () => {
-    assert.equal(findSkdUri(null), null);
-    assert.equal(findSkdUri(undefined), null);
-    assert.equal(findSkdUri(new Set()), null);
-    assert.equal(findSkdUri(new Set(['https://example.test/x'])), null);
-    // A bare scheme with no identifier would yield an empty content id.
-    assert.equal(findSkdUri(new Set(['skd://'])), null);
+  it('does not throw for skd on the real src= DrmInfo, which has no keySystemUris', () => {
+    // The regression itself: the old transform threw NO_SKD_URI here.
+    assert.ok(!('keySystemUris' in srcEqualsDrmInfo));
+    const passThrough = (initData: Uint8Array) => initData;
+    const initData = new Uint8Array([1]);
+    assert.equal(traceInitDataTransform(passThrough, () => {})(initData, 'skd', srcEqualsDrmInfo), initData);
   });
 
-  it('takes the content id from everything after the skd:// scheme', () => {
-    assert.equal(contentIdFromSkdUri('skd://CONTENTID1234567890abcd'), 'CONTENTID1234567890abcd');
-    // The polyfill strips `skd:` before the transform runs, so the parser can
-    // hand us either shape; both must yield the same id.
-    assert.equal(contentIdFromSkdUri('//CONTENTID1234567890abcd'), 'CONTENTID1234567890abcd');
+  it('reports the init-data type before delegating', () => {
+    const order: string[] = [];
+    const transform = traceInitDataTransform(
+      (initData: Uint8Array) => {
+        order.push('default');
+        return initData;
+      },
+      (type) => order.push(`type:${type}`),
+    );
+    transform(new Uint8Array(), 'skd', null);
+    transform(new Uint8Array(), 'sinf', null);
+    assert.deepEqual(order, ['type:skd', 'default', 'type:sinf', 'default']);
   });
 
-  it('passes the derived content id and certificate to the builder', () => {
-    const { calls, build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-    const initData = new Uint8Array([9, 9]);
-
-    const out = transform(initData, 'skd', {
-      keySystemUris: new Set(['skd://CONTENTID1234567890abcd']),
-      serverCertificate: CERT,
+  it('reports only the init-data type, never the init-data bytes', () => {
+    const seen: unknown[] = [];
+    const transform = traceInitDataTransform((initData: Uint8Array) => initData, (...args) => {
+      seen.push(...args);
     });
-
-    assert.deepEqual([...out], [1, 2, 3]);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0]!.contentId, 'CONTENTID1234567890abcd');
-    assert.deepEqual([...calls[0]!.initData], [9, 9]);
-    assert.deepEqual([...calls[0]!.cert], [...CERT]);
+    transform(new Uint8Array([9, 9, 9]), 'skd', srcEqualsDrmInfo);
+    assert.deepEqual(seen, ['skd']);
   });
 
-  it('fails explicitly when there is no skd:// URI', () => {
-    const { build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-
-    assert.throws(
-      () => transform(new Uint8Array([0]), 'skd', { keySystemUris: new Set(['https://x/y']), serverCertificate: CERT }),
-      /no skd:\/\/ URI/,
-    );
-    assert.throws(
-      () => transform(new Uint8Array([0]), 'skd', null),
-      /no skd:\/\/ URI/,
-    );
-  });
-
-  it('fails explicitly when the certificate is missing or empty', () => {
-    const { build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-    const uris = new Set(['skd://CONTENTID1234567890abcd']);
-
-    assert.throws(
-      () => transform(new Uint8Array([0]), 'skd', { keySystemUris: uris, serverCertificate: null }),
-      /requires a server certificate/,
-    );
-    assert.throws(
-      () =>
-        transform(new Uint8Array([0]), 'skd', {
-          keySystemUris: uris,
-          serverCertificate: new Uint8Array(0),
-        }),
-      /requires a server certificate/,
-    );
-  });
-
-  it('never falls back to returning the init data untouched on the legacy path', () => {
-    // The degraded shape - return initData and let the CDM try anyway - is what
-    // produces an opaque licence error. For 'skd' every path must throw instead.
-    const { build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-    const initData = new Uint8Array([7]);
-
-    for (const drmInfo of [null, {}, { keySystemUris: null }, { keySystemUris: new Set<string>() }]) {
-      assert.throws(() => transform(initData, 'skd', drmInfo));
-    }
-  });
-});
-
-/**
- * The MEDIA_3 regression, tested behaviourally.
- *
- * Gumlet's FairPlay is signalled through HLS `KEYFORMAT=com.apple.streamingkeydelivery`,
- * which Shaka's HLS parser surfaces as Modern EME: `initDataType: 'sinf'` with an
- * EMPTY init-data buffer and the `skd://` content id on `keySystemUris`.
- *
- * Rebuilding that into the legacy Apple MediaKeys layout strips the key id. The
- * licence still succeeds (Gumlet scopes licences by org and asset, not by key
- * id), so the trace shows `LIC_REQ > LIC_RES > LOADED` and only then does the
- * `cbcs` track fail to decode.
- *
- * These assert the OBSERVABLE contract: modern init data comes back byte-for-byte
- * and the legacy builder is never reached.
- */
-describe('FairPlay init data is only rebuilt for the legacy type', () => {
-  const CERT = new Uint8Array([1, 2, 3, 4]);
-  const uris = new Set(['skd://CONTENTID1234567890abcd']);
-
-  it('only transforms the legacy skd type', () => {
-    assert.equal(shouldTransformFairPlayInitData('skd'), true);
-  });
-
-  it('does not transform Modern EME sinf', () => {
-    assert.equal(shouldTransformFairPlayInitData('sinf'), false);
-  });
-
-  it('does not transform the other known init-data types', () => {
-    for (const type of ['cenc', 'keyids', 'webm', 'mpegdash', 'unknown', '']) {
-      assert.equal(shouldTransformFairPlayInitData(type), false);
-    }
-  });
-
-  it('does not transform a missing init-data type', () => {
-    assert.equal(shouldTransformFairPlayInitData(null), false);
-    assert.equal(shouldTransformFairPlayInitData(undefined), false);
-  });
-
-  it('returns sinf init data unchanged and never calls the legacy builder', () => {
-    // The regression itself. With no skd:// URI and no certificate at all -
-    // the real shape for a sinf stream whose sinf lives in the init segment -
-    // a builder that ran would either throw or emit a stripped blob. Passing
-    // through is the only correct answer, and it must not need any drmInfo.
-    const { calls, build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-    const empty = new Uint8Array(0);
-
-    const out = transform(empty, 'sinf', null);
-
-    assert.equal(out, empty, 'must return the very same buffer instance');
-    assert.deepEqual([...out], []);
-    assert.equal(calls.length, 0, 'the legacy builder must not be invoked');
-  });
-
-  it('returns a non-empty sinf buffer byte-for-byte', () => {
-    const { calls, build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-    const sinf = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-
-    const out = transform(sinf, 'sinf', { keySystemUris: uris, serverCertificate: CERT });
-
-    assert.deepEqual([...out], [0xde, 0xad, 0xbe, 0xef]);
-    assert.equal(calls.length, 0);
-  });
-
-  it('leaves any other non-legacy type untouched as well', () => {
-    const { calls, build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-    const buf = new Uint8Array([4, 5]);
-
-    const out = transform(buf, 'cenc', { keySystemUris: uris, serverCertificate: CERT });
-
-    assert.equal(out, buf);
-    assert.equal(calls.length, 0);
-  });
-
-  it('does not throw on modern init data even with no skd:// URI or certificate', () => {
-    // Guards against the guard being inverted: 'sinf' must never reach the
-    // NO_SKD_URI / NO_CERTIFICATE failure paths.
-    const { build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-
-    for (const drmInfo of [null, {}, { keySystemUris: new Set<string>() }, { keySystemUris: null }]) {
-      assert.doesNotThrow(() => transform(new Uint8Array([1]), 'sinf', drmInfo as never));
-    }
-  });
-
-  it('still rebuilds skd, passing the derived content id, init data and cert', () => {
-    const { calls, build } = spyBuilder();
-    const transform = createFairPlayInitDataTransform(build);
-    const initData = new Uint8Array([9, 9]);
-
-    const out = transform(initData, 'skd', { keySystemUris: uris, serverCertificate: CERT });
-
-    assert.deepEqual([...out], [1, 2, 3]);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0]!.contentId, 'CONTENTID1234567890abcd');
-    assert.deepEqual([...calls[0]!.initData], [9, 9]);
-    assert.deepEqual([...calls[0]!.cert], [...CERT]);
+  it("lets an error from Shaka's default propagate rather than swallowing it", () => {
+    // Shaka turns a throw here into INIT_DATA_TRANSFORM_ERROR (6016). Hiding it
+    // would replace a diagnosable error with a silent bad licence request.
+    const boom = new Error('certificate required');
+    const transform = traceInitDataTransform(() => {
+      throw boom;
+    }, () => {});
+    assert.throws(() => transform(new Uint8Array(), 'skd', null), (e) => e === boom);
   });
 });
 
 /**
  * Shaka replaces anything thrown inside `initDataTransform` with its own error,
- * so the stage has to survive as text. These tests pin both halves: that our
- * failures are tagged, and that recovery extracts ONLY the tag - never the
- * surrounding message, which could quote a URL, certificate or payload.
+ * so a tagged stage has to survive as text. These tests pin that recovery
+ * extracts ONLY the tag - never the surrounding message, which could quote a
+ * URL, certificate or payload.
  */
 describe('FairPlay failure stage tagging', () => {
-  const CERT = new Uint8Array([1, 2, 3, 4]);
-  const uris = new Set(['skd://CONTENTID1234567890abcd']);
-
-  const failingTransform = (drmInfo: unknown) =>
-    createFairPlayInitDataTransform((() => new Uint8Array()) as InitDataBuilder)(
-      new Uint8Array([0]),
-      'skd',
-      drmInfo as never,
-    );
-
-  it('tags a missing skd:// URI', () => {
-    try {
-      failingTransform({ keySystemUris: new Set(['https://x/y']), serverCertificate: CERT });
-      assert.fail('should have thrown');
-    } catch (e) {
-      assert.equal(fairPlayStageFromMessage((e as Error).message), 'FP_NO_SKD_URI');
-    }
-  });
-
-  it('tags a missing certificate', () => {
-    try {
-      failingTransform({ keySystemUris: uris, serverCertificate: null });
-      assert.fail('should have thrown');
-    } catch (e) {
-      assert.equal(fairPlayStageFromMessage((e as Error).message), 'FP_NO_CERTIFICATE');
-    }
-  });
-
-  it('tags an empty content identifier', () => {
-    assert.throws(
-      () => contentIdFromSkdUri('skd://'),
-      /NO_SKD_CONTENT_ID|carried no content identifier/,
-    );
+  it('recovers a tag at the start of a message', () => {
+    assert.equal(fairPlayStageFromMessage('[drm-fp]NO_CERTIFICATE: detail'), 'FP_NO_CERTIFICATE');
+    assert.equal(fairPlayStageFromMessage(new Error('[drm-fp]NO_SKD_URI: detail')), 'FP_NO_SKD_URI');
   });
 
   it('recovers the stage even when Shaka re-wraps the message', () => {
@@ -362,17 +207,12 @@ describe('FairPlay failure stage tagging', () => {
   });
 
   it('never leaks message text through the recovered stage', () => {
-    try {
-      failingTransform({ keySystemUris: uris, serverCertificate: new Uint8Array(0) });
-      assert.fail('should have thrown');
-    } catch (e) {
-      const stage = fairPlayStageFromMessage((e as Error).message);
-      assert.ok(stage);
-      assert.match(stage, /^FP_[A-Z_]+$/);
-      // The human sentence, the scheme and the payload shape must all be gone;
-      // only the bare code survives.
-      assert.ok(!/https?:|skd:\/\/|none was fetched|carried no content identifier/i.test(stage));
-    }
+    const stage = fairPlayStageFromMessage(
+      '[drm-fp]NO_CERTIFICATE: none was fetched from https://cert.example/skd://abc',
+    );
+    assert.ok(stage);
+    assert.match(stage, /^FP_[A-Z_]+$/);
+    assert.ok(!/https?:|skd:\/\/|none was fetched/i.test(stage));
   });
 });
 
@@ -398,7 +238,7 @@ describe('stage recovery from a Shaka error detail', () => {
     assert.equal(fairPlayStageFromErrorDetail(detail), 'FP_NO_SKD_URI');
   });
 
-  it('recovers every guard the transform can throw', () => {
+  it('recovers any tagged stage from data[0]', () => {
     for (const stage of ['NO_SKD_URI', 'NO_CERTIFICATE', 'NO_SKD_CONTENT_ID']) {
       const thrown = new Error(`[drm-fp]${stage}: detail that must never be emitted`);
       const detail = { code: 6016, message: 'Shaka Error 6016', data: [thrown] };

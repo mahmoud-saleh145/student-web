@@ -77,41 +77,37 @@ describe('DrmVideo Shaka wiring', () => {
   });
 
   it('configures the init-data transform on FairPlay only', () => {
-    // Shaka's default transform guards on initDataType === 'skd', which
-    // Gumlet's HLS never produces: the parser emits 'sinf' with an empty
-    // buffer and puts the skd:// URI on drmInfo.keySystemUris. FairPlay
-    // therefore needs ours; Widevine must keep Shaka's default untouched.
-    assert.match(code, /initDataTransform/);
-    assert.match(code, /createFairPlayInitDataTransform/);
-    assert.match(code, /FairPlayUtils\.initDataTransform/);
-
-    // Prove the transform sits inside the isFairPlay guard rather than in the
-    // shared config, so no Widevine ticket can ever pick it up. Positional,
-    // not a regex over formatting: the config KEY must appear exactly once,
-    // and only after the isFairPlay spread opens. (The other textual hits are
-    // the shaka.util.FairPlayUtils call it wraps.)
+    // FairPlay wraps Shaka's own default for the trace; Widevine never gets a
+    // transform. The config KEY must appear exactly once, inside the FairPlay
+    // spread, so no Widevine ticket can pick it up.
     const keys = code.match(/\n\s*initDataTransform:/g) ?? [];
     assert.equal(keys.length, 1);
-    const guard = code.indexOf('...(isFairPlay');
-    assert.ok(guard > -1, 'expected the isFairPlay guard');
+    const guard = code.indexOf('...(isFairPlay && shakaDefaultInitDataTransform');
+    assert.ok(guard > -1, 'expected the FairPlay guard around the transform');
     assert.ok(code.indexOf('initDataTransform:') > guard);
   });
 
-  it('delegates the legacy-vs-modern decision to the tested helper', () => {
-    // The MEDIA_3 guard used to be an inline `if` here, covered only by the
-    // source-text match that sat at this spot - which would have stayed green if
-    // the `if` were deleted and the comment kept. The decision now lives in
-    // `lib/fairplay.ts` as `shouldTransformFairPlayInitData`, behaviourally
-    // tested in fairplay.test.ts.
-    //
-    // What is asserted HERE is only the wiring: the component marks the trace
-    // token and delegates, and no longer carries its own copy of the rule.
-    assert.match(code, /createFairPlayInitDataTransform/);
-    assert.match(code, /fairPlayTransform\(initData, initDataType, drmInfo\)/);
+  it("delegates FairPlay init data to Shaka's own default transform", () => {
+    // Real-iPhone trace 2026-10-12: ENC_skd > IDT_skd > ERR_FP_NO_SKD_URI, no
+    // licence request. The old transform read drmInfo.keySystemUris, which
+    // Shaka never sets on the native src= route, and rebuilt Modern EME init
+    // data that Shaka itself passes through untouched. The component must read
+    // Shaka's default BEFORE configuring, and wrap - not replace - it.
+    const captured = code.indexOf(
+      'const shakaDefaultInitDataTransform = player.getConfiguration().drm.initDataTransform;',
+    );
+    assert.ok(captured > -1, "Shaka's default must be read from the player");
+    assert.ok(
+      captured < code.indexOf('initDataTransform: traceInitDataTransform('),
+      'the default must be captured before our override is installed',
+    );
+    assert.match(code, /initDataTransform: traceInitDataTransform\(shakaDefaultInitDataTransform,/);
 
-    // No second, divergent copy of the legacy-type check in this component.
-    assert.doesNotMatch(code, /initDataType\s*!==\s*FAIRPLAY_LEGACY_INIT_DATA_TYPE/);
-    assert.doesNotMatch(code, /initDataType\s*===\s*FAIRPLAY_LEGACY_INIT_DATA_TYPE/);
+    // No custom rebuild, and nothing that depends on keySystemUris, may return.
+    assert.doesNotMatch(code, /FairPlayUtils\.initDataTransform/);
+    assert.doesNotMatch(code, /createFairPlayInitDataTransform/);
+    assert.doesNotMatch(code, /keySystemUris/);
+    assert.doesNotMatch(code, /shakaMediaKeysPolyfill/, 'the polyfill check belongs to Shaka');
 
     // The trace token must still record which init-data type actually arrived.
     assert.match(code, /IDT_\$\{initDataType/);
@@ -309,16 +305,12 @@ it('still refuses to play without a licence or a manifest', () => {
   });
 
   it('installs initDataTransform at the drm LEVEL, not inside `advanced`', () => {
-    // THE bug behind the persistent MEDIA_3.
-    //
     // `drm.initDataTransform` is a top-level DrmConfiguration field, a sibling
     // of `advanced`. AdvancedDrmConfiguration has no such field, so a transform
-    // nested in `advanced` is never read and Shaka silently keeps the default.
+    // nested in `advanced` is never read: the IDT_* trace marker would silently
+    // stop firing. (Shaka's default, which our wrapper delegates to, is the
+    // correct behaviour for Modern EME - see lib/fairplay.ts.)
     //
-    // That default is a no-op on iPhone Safari: it is gated on
-    // `!!window.shakaMediaKeysPolyfill`, which does not exist there, so the raw
-    // `skd://` bytes reach generateRequest un-rebuilt, no content id is derived,
-    // and the track never decrypts.
     // Structural check: the `advanced` map is opened at a known indentation and
     // closed by the next line at that same indentation. `initDataTransform`
     // must not appear between them. Scanning by indentation is deliberate - an
@@ -351,7 +343,7 @@ it('still refuses to play without a licence or a manifest', () => {
     const afterAdvanced = lines.slice(closeIdx).join('\n');
     assert.match(
       afterAdvanced,
-      /\?\s*\(\(\) => \{[\s\S]{0,700}?initDataTransform:/,
+      /\.\.\.\(isFairPlay && shakaDefaultInitDataTransform\s*\?\s*\{\s*initDataTransform:/,
       'initDataTransform must be installed at the drm level',
     );
 
