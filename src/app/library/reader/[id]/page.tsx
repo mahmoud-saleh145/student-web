@@ -55,7 +55,7 @@ export default function LibraryReaderPage() {
   return (
     <FocusShell title={ticket.title} backHref="/library">
       <div className="overflow-hidden rounded-xl border border-border bg-surface-alt p-3" style={{ minHeight: '72vh' }}>
-        <ProtectedPdf url={ticket.url} watermark={ticket.watermark.primary} />
+        <ProtectedPdf url={ticket.url} watermark={ticket.watermark.primary} secondary={ticket.watermark.secondary} />
       </div>
       <div className="mt-4 flex items-center justify-between gap-3">
         <button

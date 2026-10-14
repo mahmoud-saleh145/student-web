@@ -49,7 +49,7 @@ function ViewerBody({ url, watermark, secondary }: { url: string; watermark: str
     // browser's PDF viewer, Download button and all.
     return (
       <div className="overflow-hidden rounded-xl border border-border bg-surface-alt p-3" style={{ minHeight: '72vh' }}>
-        <ProtectedPdf url={url} watermark={watermark} />
+        <ProtectedPdf url={url} watermark={watermark} secondary={secondary} />
       </div>
     );
   }

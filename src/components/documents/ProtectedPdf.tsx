@@ -3,8 +3,11 @@
 import * as React from 'react';
 
 import { burnWatermark } from '@/components/protection/Watermark';
+import { burnImageWatermark, identityWatermarkText, loadWatermarkImage } from '@/lib/pdf-watermark';
 import { pdfjsDocumentOptions } from '@/lib/pdfjs-document';
 import { useTranslation } from '@/lib/session-context';
+
+import pdfWatermark from '@/assets/brand/pdf-watermark.png';
 
 /**
  * A purchased document, drawn rather than handed over.
@@ -24,7 +27,17 @@ import { useTranslation } from '@/lib/session-context';
  * The worker is loaded from the app's own origin rather than a CDN, so the
  * document never depends on a third party being up or honest.
  */
-export function ProtectedPdf({ url, watermark }: { url: string; watermark: string }) {
+export function ProtectedPdf({
+  url,
+  watermark,
+  secondary,
+}: {
+  url: string;
+  /** The student's name, from the ticket. Shown in the corner badge too. */
+  watermark: string;
+  /** The student's ID line from the same ticket (`watermark.secondary`). */
+  secondary?: string;
+}) {
   const { t } = useTranslation();
   const hostRef = React.useRef<HTMLDivElement>(null);
   const [state, setState] = React.useState<'loading' | 'ready' | 'failed'>('loading');
@@ -37,6 +50,12 @@ export function ProtectedPdf({ url, watermark }: { url: string; watermark: strin
 
     (async () => {
       try {
+        // Requested first so it downloads beside the document. It never
+        // rejects: an image that cannot load resolves to null, and the pages
+        // are drawn without it - see lib/pdf-watermark.ts.
+        const watermarkImage = loadWatermarkImage(pdfWatermark.src);
+        const identity = identityWatermarkText(watermark, secondary);
+
         const pdfjs = await import('pdfjs-dist');
         pdfjs.GlobalWorkerOptions.workerSrc = new URL(
           'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -49,6 +68,9 @@ export function ProtectedPdf({ url, watermark }: { url: string; watermark: strin
         const doc = await pdfjs.getDocument(pdfjsDocumentOptions(url)).promise;
         if (cancelled) return;
 
+        // Awaited before the first page so every page carries the same marks.
+        const image = await watermarkImage;
+        if (cancelled) return;
 
         host.replaceChildren();
         setPages(doc.numPages);
@@ -75,7 +97,8 @@ export function ProtectedPdf({ url, watermark }: { url: string; watermark: strin
           const context = canvas.getContext('2d');
           if (!context) continue;
           await page.render({ canvasContext: context, viewport }).promise;
-          burnWatermark(context, canvas.width, canvas.height, watermark, dpr);
+          if (image) burnImageWatermark(context, canvas.width, canvas.height, image);
+          burnWatermark(context, canvas.width, canvas.height, identity, dpr);
         }
 
         if (!cancelled) setState('ready');
@@ -87,7 +110,7 @@ export function ProtectedPdf({ url, watermark }: { url: string; watermark: strin
     return () => {
       cancelled = true;
     };
-  }, [url, watermark]);
+  }, [url, watermark, secondary]);
 
   return (
     <div className="relative" data-protected>
