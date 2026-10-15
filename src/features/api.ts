@@ -57,8 +57,13 @@ function params(obj: Record<string, unknown>): string {
 
 export interface CourseFilters {
   q?: string;
-  universityId?: string;
-  facultyId?: string;
+  /**
+   * Optional display filter only.
+   *
+   * Narrows the result set to one year/level; it never restricts what the
+   * student may enrol in or study. University and faculty are intentionally
+   * absent — they come from the student's profile and are enforced server-side.
+   */
   academicYearId?: string;
   teacherId?: string;
   free?: boolean;

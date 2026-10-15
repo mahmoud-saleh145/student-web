@@ -12,15 +12,13 @@ import {
   ErrorState,
   PageHeader,
 } from "@/components/ui/feedback";
-import { Select, Sheet, Toggle } from "@/components/ui/forms";
+import { Input, Select, Sheet, Toggle } from "@/components/ui/forms";
 import { FilterIcon } from "@/components/ui/icons";
 import { Toolbar } from "@/components/ui/table";
 import {
   useAcademicYears,
   useProfile,
   useCourseList,
-  useFaculties,
-  useUniversities,
   type CourseFilters,
 } from "@/features/api";
 import { useSession, useTranslation } from "@/lib/session-context";
@@ -30,16 +28,12 @@ type TFn = (key: string, params?: Record<string, string | number>) => string;
 
 interface FilterControlsProps {
   t: TFn;
-  universityOptions: { value: string; label: string }[];
-  facultyOptions: { value: string; label: string }[];
   yearOptions: { value: string; label: string }[];
   yearLabel: string;
-  universityId: string;
-  facultyId: string;
+  searchTerm: string;
   academicYearId: string;
   freeOnly: boolean;
-  onUniversity: (value: string) => void;
-  onFaculty: (value: string) => void;
+  onSearch: (value: string) => void;
   onYear: (value: string) => void;
   onFree: (value: boolean) => void;
 }
@@ -47,20 +41,12 @@ interface FilterControlsProps {
 function FilterControls(props: FilterControlsProps) {
   return (
     <div className="space-y-4">
-      <Select
-        label={props.t("courses.filterUniversity")}
-        value={props.universityId}
-        onChange={(e) => props.onUniversity(e.target.value)}
-        placeholder="—"
-        options={props.universityOptions}
-      />
-      <Select
-        label={props.t("auth.faculty")}
-        value={props.facultyId}
-        onChange={(e) => props.onFaculty(e.target.value)}
-        placeholder="—"
-        options={props.facultyOptions}
-        disabled={!props.universityId}
+      <Input
+        label={props.t("common.search")}
+        value={props.searchTerm}
+        onChange={(e) => props.onSearch(e.target.value)}
+        placeholder={props.t("common.search")}
+        type="search"
       />
       <Select
         label={props.yearLabel}
@@ -89,8 +75,7 @@ export default function CoursesPage() {
   const { status } = useSession();
   const [sort, setSort] = React.useState<Sort>("newest");
   const [freeOnly, setFreeOnly] = React.useState(false);
-  const [universityId, setUniversityId] = React.useState<string | null>(null);
-  const [facultyId, setFacultyId] = React.useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = React.useState<string>("");
   const [academicYearId, setAcademicYearId] = React.useState<string | null>(
     null,
   );
@@ -100,45 +85,43 @@ export default function CoursesPage() {
     if (status === "unauthenticated") router.replace("/login");
   }, [status, router]);
 
+  /*
+    University and faculty are deliberately absent: they come from the
+    student's own profile and are enforced server-side by
+    `studentCourseWhere`. Sending them could only ever narrow the result set,
+    never widen it, so the control would have been a filter that could not do
+    anything useful.
+  */
   const filters = React.useMemo<CourseFilters>(
     () => ({
       sort,
       free: freeOnly || undefined,
-      universityId: universityId ?? undefined,
-      facultyId: facultyId ?? undefined,
+      q: searchTerm || undefined,
       academicYearId: academicYearId ?? undefined,
     }),
-    [sort, freeOnly, universityId, facultyId, academicYearId],
+    [sort, freeOnly, searchTerm, academicYearId],
   );
 
   const query = useCourseList(filters);
-  const universities = useUniversities();
-  const faculties = useFaculties(universityId);
   const profile = useProfile();
-  const years = useAcademicYears(profile.data?.department?.id);
+  /*
+    Scoped to the FACULTY, not the department. A department-owned ladder
+    outranks the faculty's (catalog.service.ts resolveAcademicStructure), so
+    asking by department could offer only a subset of the years a student may
+    browse. The faculty is the unit the catalogue is actually scoped to.
+  */
+  const years = useAcademicYears(profile.data?.faculty?.id);
   const items = query.data?.items ?? [];
   const total = query.data?.total ?? 0;
   const activeFilterCount =
-    (freeOnly ? 1 : 0) +
-    (universityId ? 1 : 0) +
-    (facultyId ? 1 : 0) +
-    (academicYearId ? 1 : 0);
+    (freeOnly ? 1 : 0) + (searchTerm ? 1 : 0) + (academicYearId ? 1 : 0);
 
   const clearFilters = React.useCallback(() => {
     setFreeOnly(false);
-    setUniversityId(null);
-    setFacultyId(null);
+    setSearchTerm("");
     setAcademicYearId(null);
   }, []);
 
-  const universityOptions = (universities.data ?? []).map((u) => ({
-    value: u.id,
-    label: u.nameAr || u.name,
-  }));
-  const facultyOptions = (faculties.data ?? []).map((f) => ({
-    value: f.id,
-    label: f.nameAr || f.name,
-  }));
   const yearOptions = (years.data ?? []).map((y) => ({
     value: y.id,
     label: y.nameAr || y.name,
@@ -152,11 +135,8 @@ export default function CoursesPage() {
 
   const controlProps: FilterControlsProps = {
     t,
-    universityOptions,
-    facultyOptions,
     yearOptions,
-    universityId: universityId ?? "",
-    facultyId: facultyId ?? "",
+    searchTerm,
     academicYearId: academicYearId ?? "",
     /*
       Labelled from the ladder the options came from, not from the department's
@@ -169,20 +149,7 @@ export default function CoursesPage() {
         ? t("auth.level")
         : t("courses.filterYear"),
     freeOnly,
-    onUniversity: (value) => {
-      setUniversityId(value || null);
-      // The year filter is scoped to a unit, so a year chosen under one
-      // university is meaningless under another. Clearing it here is what stops
-      // the request combining a new university with another university's rung.
-      setFacultyId(null);
-      setAcademicYearId(null);
-    },
-    onFaculty: (value) => {
-      setFacultyId(value || null);
-      // Same reason, one level up: the list behind the year filter changes with
-      // the college, so a year already chosen is no longer necessarily offered.
-      setAcademicYearId(null);
-    },
+    onSearch: setSearchTerm,
     onYear: (value) => setAcademicYearId(value || null),
     onFree: setFreeOnly,
   };
@@ -249,6 +216,14 @@ export default function CoursesPage() {
               {t("web.resultsCount", { count: total })}
             </span>
             <div className="ms-auto flex items-center gap-2">
+              <Input
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder={t("common.search")}
+                type="search"
+                aria-label={t("common.search")}
+                className="w-44 lg:w-64"
+              />
               <span className="text-[13px] text-muted">
                 {t("courses.sortBy")}
               </span>
