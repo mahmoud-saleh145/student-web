@@ -215,7 +215,25 @@ export default function CoursesPage() {
             <span className="text-[13px] font-semibold">
               {t("web.resultsCount", { count: total })}
             </span>
-            <div className="ms-auto flex items-center gap-2">
+            {/*
+              Search and sorting live in the filters Sheet below `lg`.
+
+              They sat here at a fixed 176px input plus a fixed 208px select
+              beside a label, so this row needed 429px before anything else.
+              Under 445px of viewport the row cannot fit, and because it is
+              one flex item inside a `flex-wrap` Toolbar the wrap never
+              happened - the document simply grew sideways and the heading,
+              the cards and the controls themselves were clipped on every
+              device narrower than that. Phones wide enough to fit it were
+              fine, which is what made it look device-specific.
+
+              The Sheet already renders both controls off the same state
+              (`FilterControls` for search, the sort Select below it), so a
+              phone loses nothing but a tap: the count stays here and the rest
+              sits behind the filters button above. From `lg` up the row is
+              inline again and unchanged.
+            */}
+            <div className="ms-auto hidden items-center gap-2 lg:flex">
               <Input
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
