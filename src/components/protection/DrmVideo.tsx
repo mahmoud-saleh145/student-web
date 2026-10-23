@@ -447,6 +447,18 @@ export default function DrmVideo({
             if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) mark('LIC_RES');
           });
         }
+        // Shaka fires this only after `session.update(ckc)` RESOLVED - i.e. the
+        // CDM accepted the licence. An HTTP response alone (LIC_RES) is not
+        // that. The FairPlay branch has always had this marker; without it on
+        // Widevine a media-layer failure (VIDEO_ERROR) cannot say whether the
+        // CDM ever accepted a licence, which is the one observation separating
+        // a licence refusal from a device that cannot secure-decode. Scope
+        // limit, verified in shaka 4.11.7 drm_engine.js: this event fires only
+        // after `session.update()` RESOLVED - the CDM accepted the licence. It
+        // does NOT imply decryption or playback; MEDIA_*, PLAYING and CANPLAY
+        // remain the evidence for those stages. Observe only - no payload or
+        // configuration changes.
+        player.addEventListener('drmsessionupdate', () => mark('LIC_OK'));
       }
 
       // --- lifecycle --------------------------------------------------------
@@ -469,7 +481,24 @@ export default function DrmVideo({
         setFatal(
           isLicence
             ? 'This browser or device is not permitted to play protected video.'
-            : `Protected playback failed (${name}). Please reload the lesson.`,
+            : !isFairPlay && code === shaka.util.Error.Code.VIDEO_ERROR
+              ? // VIDEO_ERROR (3016) is raised from the media element for ANY
+                // media failure after load: its payload carries MediaError.code
+                // 1 ABORTED, 2 NETWORK, 3 DECODE or 4 SRC_NOT_SUPPORTED (see
+                // videoErrorDetail), so codec gaps, mid-stream network loss and
+                // corrupted data are all in this class - not only a decryption
+                // failure. EME exposes no API for the CDM's security level, and
+                // a device that CANNOT satisfy our HW_SECURE_ALL request is
+                // refused earlier, at requestMediaKeySystemAccess, as
+                // REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE - which keeps its own
+                // specific diagnostic in the licence class above. So a 3016 on
+                // its own is no evidence of missing Widevine L1, and naming it
+                // here would misdiagnose ordinary Android/Web media failures.
+                // The message stays cause-neutral and actionable; the stage
+                // token and the MEDIA_* markers below carry the evidence for
+                // support. (Reported case: Huawei phone, build 4854b79.)
+                'Protected playback could not continue on this browser or device. Try reloading once; if it keeps failing, try the latest Chrome or Edge, or another supported device, and contact support with the technical information on this screen.'
+              : `Protected playback failed (${name}). Please reload the lesson.`,
         );
         // Our own init-data failures carry a stage tag so the failing step is
         // identifiable in production. Only the tag is emitted - never the
