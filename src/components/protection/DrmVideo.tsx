@@ -447,6 +447,14 @@ export default function DrmVideo({
             if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) mark('LIC_RES');
           });
         }
+        // Shaka fires this only after `session.update(ckc)` RESOLVED - i.e. the
+        // CDM accepted the licence. An HTTP response alone (LIC_RES) is not
+        // that. The FairPlay branch has always had this marker; without it on
+        // Widevine a media-layer failure (VIDEO_ERROR) cannot say whether the
+        // CDM ever accepted a licence, which is the one observation separating
+        // a licence refusal from a device that cannot secure-decode. Observe
+        // only - no payload or configuration changes.
+        player.addEventListener('drmsessionupdate', () => mark('LIC_OK'));
       }
 
       // --- lifecycle --------------------------------------------------------
@@ -469,7 +477,18 @@ export default function DrmVideo({
         setFatal(
           isLicence
             ? 'This browser or device is not permitted to play protected video.'
-            : `Protected playback failed (${name}). Please reload the lesson.`,
+            : !isFairPlay && code === shaka.util.Error.Code.VIDEO_ERROR
+              ? // VIDEO_ERROR on the Widevine path is the hardware-DRM
+                // capability class: the manifest loaded, DRM init ran, and the
+                // media element failed to decrypt/decode the protected stream.
+                // On a device without hardware-secure Widevine (L1) - reported
+                // in production on a Huawei phone - reloading can never help,
+                // so "please reload" was actively misleading. The cause is
+                // stated as the capability it is, without asserting certainty
+                // (a transient failure on a supported device reads fine here
+                // too), and the stage token below is unchanged for support.
+                'This device could not play the protected stream. If reloading does not help, its browser likely lacks hardware-protected playback (Widevine L1) support - try the latest Chrome or Edge on this device, or another supported device.'
+              : `Protected playback failed (${name}). Please reload the lesson.`,
         );
         // Our own init-data failures carry a stage tag so the failing step is
         // identifiable in production. Only the tag is emitted - never the

@@ -480,3 +480,60 @@ it('still refuses to play without a licence or a manifest', () => {
     assert.match(DrmVideo, /playerRef\.current\.destroy\(\)/);
   });
 });
+
+/**
+ * Production report 2026-10 (Huawei phone, student-web-gray.vercel.app,
+ * build 4854b79): stage `DRM_PLAYBACK_VIDEO_ERROR`, trace beginning
+ * `MANIFEST@25`. That signature is Shaka's VIDEO_ERROR (3016) raised from the
+ * media element after the manifest loaded - a device whose Widevine CDM
+ * accepted the `HW_SECURE_ALL` request but could not secure-decode the
+ * protected stream. Two invariants keep this failure class diagnosable and
+ * honestly reported:
+ *
+ *   1. the Widevine branch records `LIC_OK` (Shaka `drmsessionupdate`) - the
+ *      only marker separating "the CDM accepted the licence" from "the licence
+ *      exchange never completed";
+ *   2. the on-screen message names the actual capability (hardware-protected
+ *      playback / Widevine L1) instead of telling the student to reload a
+ *      device that can never play this content, while every other failure
+ *      class keeps its existing wording and the stage token is unchanged.
+ */
+describe('DrmVideo media-layer failure reporting (Widevine capability class)', () => {
+  it('records CDM licence acceptance on the Widevine branch, not only FairPlay', () => {
+    // Anchored on the Widevine request filter - its callback takes only
+    // `(type)`, while the FairPlay filter takes `(type, request)` - and ended
+    // at the Shaka error listener, so the slice is exactly the else-branch.
+    const anchor = code.indexOf('ne.registerRequestFilter((type) => {');
+    assert.ok(anchor > -1, 'the Widevine observe-only licence filter must exist');
+    const widevineBranch = code.slice(anchor, code.indexOf("addEventListener('error'"));
+    assert.match(
+      widevineBranch,
+      /player\.addEventListener\('drmsessionupdate', \(\) => mark\('LIC_OK'\)\)/,
+    );
+    // Still observe-only: the branch must touch no payload.
+    assert.doesNotMatch(widevineBranch, /request\.body|response\.data/);
+  });
+
+  it('gives the Widevine VIDEO_ERROR an accurate, actionable message', () => {
+    // Scoped to the error listener and to VIDEO_ERROR on the non-FairPlay
+    // path only. Licence-class errors, FairPlay and every other playback
+    // error keep their existing wording.
+    const handler = code.slice(
+      code.indexOf("addEventListener('error'"),
+      code.indexOf("mark('MANIFEST')"),
+    );
+    assert.match(
+      handler,
+      /!isFairPlay && code === shaka\.util\.Error\.Code\.VIDEO_ERROR/,
+      'the capability message must be scoped to Widevine VIDEO_ERROR',
+    );
+    assert.match(handler, /Widevine L1/);
+    assert.match(handler, /try the latest Chrome or Edge/);
+    // Generic retry advice remains for the other classes...
+    assert.match(handler, /Protected playback failed \(\$\{name\}\)\. Please reload the lesson\./);
+    // ...and so do the licence message and the unchanged stage token support
+    // reads from screenshots.
+    assert.match(handler, /not permitted to play protected video/);
+    assert.match(handler, /DRM_PLAYBACK_\$\{name\}/);
+  });
+});
