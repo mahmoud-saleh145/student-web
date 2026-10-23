@@ -484,21 +484,30 @@ it('still refuses to play without a licence or a manifest', () => {
 /**
  * Production report 2026-10 (Huawei phone, student-web-gray.vercel.app,
  * build 4854b79): stage `DRM_PLAYBACK_VIDEO_ERROR`, trace beginning
- * `MANIFEST@25`. That signature is Shaka's VIDEO_ERROR (3016) raised from the
- * media element after the manifest loaded - a device whose Widevine CDM
- * accepted the `HW_SECURE_ALL` request but could not secure-decode the
- * protected stream. Two invariants keep this failure class diagnosable and
- * honestly reported:
+ * `MANIFEST@25` - Shaka VIDEO_ERROR (3016) raised from the media element
+ * after the manifest loaded. WHY it failed is a PROBABLE hypothesis (a CDM
+ * without hardware-secure Widevine), not a confirmed fact: EME exposes no
+ * security-level API, and this component never infers one from a media error,
+ * a brand or a user agent. These tests pin the invariants that hold regardless
+ * of the eventual cause:
  *
- *   1. the Widevine branch records `LIC_OK` (Shaka `drmsessionupdate`) - the
- *      only marker separating "the CDM accepted the licence" from "the licence
- *      exchange never completed";
- *   2. the on-screen message names the actual capability (hardware-protected
- *      playback / Widevine L1) instead of telling the student to reload a
- *      device that can never play this content, while every other failure
- *      class keeps its existing wording and the stage token is unchanged.
+ *   1. the Widevine branch records `LIC_OK` on Shaka `drmsessionupdate`,
+ *      which shaka 4.11.7 drm_engine.js dispatches only after
+ *      `session.update()` RESOLVED (the CDM accepted the licence; a rejection
+ *      raises LICENSE_RESPONSE_REJECTED instead) - so licence acceptance is
+ *      distinguishable from a media-layer failure, without implying
+ *      decryption or playback;
+ *   2. a generic VIDEO_ERROR is NEVER attributed to Widevine L1: its payload
+ *      carries MediaError codes 1-4 (ABORTED/NETWORK/DECODE/SRC_NOT_SUPPORTED),
+ *      so codec, network and decode causes are all in the class, and a device
+ *      that cannot satisfy HW_SECURE_ALL is refused at
+ *      requestMediaKeySystemAccess as REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE,
+ *      which keeps its own specific diagnostic;
+ *   3. licence rejection, explicit key-system configuration refusal, manifest,
+ *      certificate, network and every other class keep their existing
+ *      classifications, stage tokens and wording - FairPlay/iOS included.
  */
-describe('DrmVideo media-layer failure reporting (Widevine capability class)', () => {
+describe('DrmVideo media-layer failure reporting (evidence-based classes)', () => {
   it('records CDM licence acceptance on the Widevine branch, not only FairPlay', () => {
     // Anchored on the Widevine request filter - its callback takes only
     // `(type)`, while the FairPlay filter takes `(type, request)` - and ended
@@ -512,12 +521,19 @@ describe('DrmVideo media-layer failure reporting (Widevine capability class)', (
     );
     // Still observe-only: the branch must touch no payload.
     assert.doesNotMatch(widevineBranch, /request\.body|response\.data/);
+    // LIC_OK covers the licence-ACCEPTANCE stage only; playback-start stays a
+    // separate, independently wired marker (case 7).
+    assert.match(
+      code,
+      /video\?\.addEventListener\('playing', \(\) => mark\('PLAYING'\)\)/,
+      'PLAYING must remain its own marker, never folded into LIC_OK',
+    );
   });
 
-  it('gives the Widevine VIDEO_ERROR an accurate, actionable message', () => {
-    // Scoped to the error listener and to VIDEO_ERROR on the non-FairPlay
-    // path only. Licence-class errors, FairPlay and every other playback
-    // error keep their existing wording.
+  it('never blames a generic Widevine-path VIDEO_ERROR on missing Widevine L1', () => {
+    // Android and Web share this ONE non-FairPlay path in the component
+    // (`!isFairPlay`), so this single scope covers both cases: neither an
+    // Android nor a Web 3016 may be classified as missing Widevine L1.
     const handler = code.slice(
       code.indexOf("addEventListener('error'"),
       code.indexOf("mark('MANIFEST')"),
@@ -525,15 +541,83 @@ describe('DrmVideo media-layer failure reporting (Widevine capability class)', (
     assert.match(
       handler,
       /!isFairPlay && code === shaka\.util\.Error\.Code\.VIDEO_ERROR/,
-      'the capability message must be scoped to Widevine VIDEO_ERROR',
+      'the media-layer class stays scoped to the non-FairPlay path',
     );
-    assert.match(handler, /Widevine L1/);
-    assert.match(handler, /try the latest Chrome or Edge/);
-    // Generic retry advice remains for the other classes...
-    assert.match(handler, /Protected playback failed \(\$\{name\}\)\. Please reload the lesson\./);
-    // ...and so do the licence message and the unchanged stage token support
-    // reads from screenshots.
+    // The message must assert no cause the client cannot prove...
+    assert.doesNotMatch(
+      handler,
+      /Widevine L1|hardware-protected|hardware security|likely lacks/,
+    );
+    // ...and must stay actionable rather than reload-only.
+    assert.match(handler, /Try reloading once/);
+    assert.match(handler, /Chrome or Edge/);
+    assert.match(handler, /contact support/);
+    // No brand or user-agent sniffing may enter the classifier.
+    assert.doesNotMatch(handler, /userAgent|navigator\.platform|iPhone|Android|Huawei/);
+  });
+
+  it('keeps an explicit key-system configuration refusal in the licence class', () => {
+    // Shaka 4.11.7 has no "unsupported robustness" code: a request the CDM
+    // cannot satisfy surfaces as REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE
+    // (6001, "None of the requested key system configurations are available").
+    // THAT - not a 3016 - is the evidence-backed security-configuration
+    // diagnostic, and it keeps its specific message and stage prefix.
+    const handler = code.slice(
+      code.indexOf("addEventListener('error'"),
+      code.indexOf("mark('MANIFEST')"),
+    );
+    assert.match(handler, /REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE/);
     assert.match(handler, /not permitted to play protected video/);
+    assert.match(handler, /DRM_LICENCE_\$\{name\}/);
+  });
+
+  it('keeps licence rejection distinguishable from an unrelated media error', () => {
+    // The licence class carries its own codes, stage prefix and HTTP marker;
+    // a media-element failure falls through to the playback class with the
+    // MEDIA_* discriminator.
+    const handler = code.slice(
+      code.indexOf("addEventListener('error'"),
+      code.indexOf("mark('MANIFEST')"),
+    );
+    assert.match(handler, /LICENSE_REQUEST_FAILED/);
+    assert.match(handler, /LICENSE_RESPONSE_REJECTED/);
+    assert.match(handler, /DRM_LICENCE_\$\{name\}/);
     assert.match(handler, /DRM_PLAYBACK_\$\{name\}/);
+    assert.match(handler, /LIC_HTTP_\$\{licenceHttp\}/);
+    assert.match(handler, /MEDIA_\$\{media\.code\}/);
+  });
+
+  it('preserves the manifest, certificate, network and generic classifications', () => {
+    // Manifest stage and its own load-rejection wording, the FairPlay
+    // certificate config and stage classes, and the untouched generic reload
+    // advice for every other class.
+    const handler = code.slice(
+      code.indexOf("addEventListener('error'"),
+      code.indexOf("mark('CANPLAY')"),
+    );
+    assert.match(handler, /mark\('MANIFEST'\)/);
+    assert.match(
+      handler,
+      /Could not start protected playback \(\$\{name\}\)\. Please reload the lesson\./,
+    );
+    assert.match(
+      handler,
+      /Protected playback failed \(\$\{name\}\)\. Please reload the lesson\./,
+    );
+    assert.match(handler, /DRM_FAIRPLAY_\$\{fpStage\}/);
+    assert.match(code, /isFairPlay && drm\.certificateUrl/);
+  });
+
+  it('leaves the iOS/FairPlay path and messages unchanged', () => {
+    // The media-layer special case is gated on `!isFairPlay`, so FairPlay
+    // keeps the exact production wording for both classes, and the
+    // native-HLS load rejection keeps its own wiring.
+    const handler = code.slice(
+      code.indexOf("addEventListener('error'"),
+      code.indexOf("mark('MANIFEST')"),
+    );
+    assert.match(handler, /isLicence[\s\S]*not permitted to play protected video/);
+    assert.match(handler, /DRM_FAIRPLAY_\$\{fpStage\}/);
+    assert.match(code, /needsNativeFairPlayHls\(drm\)/);
   });
 });
