@@ -621,3 +621,77 @@ describe('DrmVideo media-layer failure reporting (evidence-based classes)', () =
     assert.match(code, /needsNativeFairPlayHls\(drm\)/);
   });
 });
+
+/**
+ * Production 2026-10 (Huawei phone, student-web-gray.vercel.app, stage
+ * `DRM_PLAYBACK_VIDEO_ERROR`): the overlay renders the full trace, but on the
+ * phone it was uncollectable in practice - the watermark layer (`absolute
+ * inset-0 z-10`) paints over the error overlay, the trace box was `select-none`,
+ * and Huawei Browser ships no DevTools. These invariants keep the diagnostics
+ * retrievable on the only device class that needs them, and pin that what
+ * reaches the clipboard is tokens and numbers only.
+ */
+describe('DrmVideo on-screen trace retrieval (no-DevTools phones)', () => {
+  it('lets the error overlay paint above the watermark', () => {
+    // Without a z above the watermark's z-10 the diagnostic text sits under it
+    // in every screenshot taken on the device that cannot inspect the DOM.
+    assert.match(
+      code,
+      /className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 rounded-lg bg-black\/95 p-6 text-center text-white"/,
+    );
+  });
+
+  it('keeps the trace box selectable so a phone can long-press and copy', () => {
+    assert.match(code, /text-white\/45 select-text/);
+    assert.doesNotMatch(code, /text-white\/45 select-none/);
+  });
+
+  it('offers a copy button carrying the stage and the trace, and nothing else', () => {
+    const start = code.indexOf('const copyDiagnostics');
+    assert.ok(start > -1, 'the copy handler must exist');
+    const handler = code.slice(start, code.indexOf('return (', start));
+    // The clipboard payload is exactly the on-screen stage plus the formatted
+    // trace - fixed tokens and timestamps...
+    assert.match(handler, /`\$\{stage \?\? ''\}\\n\$\{formatTrace\(trace, '\\n'\)\}`/);
+    // ...and never a message, a URL, or anything credential-shaped.
+    assert.doesNotMatch(handler, /licenseUrl|certificateUrl|cookie|Authorization|\.message/);
+    assert.match(handler, /navigator\.clipboard\?\.writeText/);
+    assert.match(code, /\{copied \? 'Copied' : 'Copy diagnostics'\}/);
+  });
+
+  it('shows the copy button in the very overlay that reports DRM_PLAYBACK_VIDEO_ERROR', () => {
+    // The reported production state on the Huawei phone: a non-FairPlay,
+    // non-licence VIDEO_ERROR (3016) must land in the playback class...
+    const handler = code.slice(
+      code.indexOf("addEventListener('error'"),
+      code.indexOf('} catch (e) {'),
+    );
+    assert.doesNotMatch(
+      handler.slice(handler.indexOf('const licenceCodes'), handler.indexOf('];')),
+      /VIDEO_ERROR/,
+      'VIDEO_ERROR must not be routed to the licence class',
+    );
+    assert.match(handler, /`DRM_PLAYBACK_\$\{name\}\`/);
+    // ...and the same handler marks KS_/ERR_ tokens BEFORE setStage, so
+    // trace.length - the button's render condition - is already non-zero in
+    // the same batched render that puts the stage on screen.
+    assert.ok(
+      handler.indexOf('mark(`KS_') < handler.indexOf('setStage(reported)'),
+      'the trace must be marked before the stage renders',
+    );
+    assert.ok(
+      handler.indexOf('mark(`ERR_') < handler.indexOf('setStage(reported)'),
+      'the ERR token must be marked before the stage renders',
+    );
+    // The stage, the trace and the button share one overlay (role="alert")
+    // painted above the watermark, with nothing clipping the content, and the
+    // trace box stays scrollable and phone-width inside it.
+    const overlay = code.slice(code.indexOf('role="alert"'), code.indexOf('<Watermark'));
+    assert.match(overlay, /data-drm-stage=\{stage\}/);
+    assert.match(overlay, /data-drm-trace=\{formatTrace\(trace, '>'\)\}/);
+    assert.match(overlay, /\{copied \? 'Copied' : 'Copy diagnostics'\}/);
+    assert.match(overlay, /absolute inset-0 z-20 /);
+    assert.match(overlay, /max-h-40 max-w-md overflow-y-auto/);
+    assert.doesNotMatch(overlay, /overflow-hidden/);
+  });
+});

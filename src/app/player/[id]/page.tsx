@@ -13,7 +13,7 @@ import { api, ApiError } from '@/lib/api-client';
 import { formatTimecode } from '@/lib/format';
 import { detectPlaybackPlatform } from '@/lib/playback-platform';
 import { isDrmPlaybackTicket } from '@/lib/drm-playback';
-import { gumletEmbedSrc, isRejectedDeliveryField, playbackTicketRequestBody } from '@/lib/gumlet-embed';
+import { gumletEmbedExperimentRequested, gumletEmbedSrc, isRejectedDeliveryField, playbackTicketRequestBody } from '@/lib/gumlet-embed';
 import { qk } from '@/lib/query-keys';
 import { useTranslation } from '@/lib/session-context';
 import { usePlayerStore } from '@/store/stores';
@@ -171,7 +171,17 @@ function ProtectedPlayer({
       // (lib/gumlet-embed.ts); a backend that predates the field rejects it,
       // and the request is then repeated without it.
       const platform = detectPlaybackPlatform();
-      const body = playbackTicketRequestBody(platform);
+      // PREVIEW EXPERIMENT (Huawei DRM diagnosis): a manual `?gumletEmbed=1`
+      // on the player URL opts this session into the same server-signed Gumlet
+      // embed flow iOS already uses. Absent the parameter the body is
+      // byte-identical to today; the backend still decides, and
+      // gumletEmbedSrc() still validates the returned URL before anything
+      // renders. Read at request time in this client-only effect - no hook,
+      // no SSR coupling. Revert: remove this call and the helper.
+      const embedExperiment = gumletEmbedExperimentRequested(
+        typeof window === 'undefined' ? '' : window.location.search,
+      );
+      const body = playbackTicketRequestBody(platform, { embedExperiment });
       const requestTicket = (payload: object) =>
         api.post<PlaybackTicket>(`playback/videos/${videoId}/ticket`, payload);
       const [tk, al] = await Promise.all([

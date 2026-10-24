@@ -21,22 +21,42 @@ const GUMLET_EMBED_HOST = 'play.gumlet.io';
 type TicketPlatform = 'ios' | 'android' | 'web';
 
 /**
+ * PREVIEW EXPERIMENT ONLY (Huawei DRM diagnosis): a manual `?gumletEmbed=1`
+ * on the player URL extends the same embed flow to non-iOS platforms. The flag
+ * is read from the real location at ticket-request time and never inferred
+ * from the user agent, so its absence leaves every request byte-identical to
+ * today. The backend still decides - it returns `embedUrl` only while
+ * GUMLET_WEB_EMBED_ENABLED is on and the asset is Gumlet-backed - and
+ * `gumletEmbedSrc()` still validates whatever comes back. Remove this helper,
+ * the option on the body builder and the page call site to revert.
+ */
+export function gumletEmbedExperimentRequested(search: string): boolean {
+  return new URLSearchParams(search).get('gumletEmbed') === '1';
+}
+
+/**
  * Body of the playback-ticket request.
  *
- * Only iOS / iPadOS web playback opts in to Gumlet's embed player
+ * iOS / iPadOS web playback always opts in to Gumlet's embed player
  * (`delivery: 'embed'`): that is the flow where our Shaka/FairPlay setup fails
  * and Gumlet's player was observed working. Every other platform sends exactly
- * what it sent before. The opt-in is explicit because `platform: 'ios'` alone
- * is also what the native iOS app sends, and the native app must not change.
+ * what it sent before unless the manual preview experiment
+ * (`gumletEmbedExperimentRequested`) is on. The opt-in is explicit because
+ * `platform: 'ios'` alone is also what the native iOS app sends, and the
+ * native app must not change.
  *
  * The backend still decides: it returns `embedUrl` only while
  * GUMLET_WEB_EMBED_ENABLED is on, so this opt-in is inert until then.
  */
-export function playbackTicketRequestBody(platform: TicketPlatform): {
+export function playbackTicketRequestBody(
+  platform: TicketPlatform,
+  opts?: { embedExperiment?: boolean },
+): {
   platform: TicketPlatform;
   delivery?: 'embed';
 } {
-  return platform === 'ios' ? { platform, delivery: 'embed' } : { platform };
+  if (platform === 'ios') return { platform, delivery: 'embed' };
+  return opts?.embedExperiment ? { platform, delivery: 'embed' } : { platform };
 }
 
 /**

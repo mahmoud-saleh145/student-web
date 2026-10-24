@@ -120,6 +120,8 @@ export default function DrmVideo({
   // effect started, and a repeat count, so timing and duplicate events (e.g. a
   // second `encrypted` event) are visible rather than inferred from ordering.
   const [trace, setTrace] = React.useState<TraceEntry[]>([]);
+  /** True just after the trace was copied, so the button confirms the tap. */
+  const [copied, setCopied] = React.useState(false);
   const traceStartRef = React.useRef(0);
   const mark = React.useCallback((token: string) => {
     const atMs = performance.now() - traceStartRef.current;
@@ -623,6 +625,20 @@ export default function DrmVideo({
     };
   }, [manifestUrl, drm.scheme, drm.licenseUrl, drm.certificateUrl, captionsEnabled, captions, mark, markMediaState]);
 
+  /**
+   * The one telemetry a phone owner can report back: the stage and the trace,
+   * exactly as shown. Both are fixed tokens and numbers (see
+   * lib/drm-diagnostics.ts), so the clipboard can never receive an error
+   * message, a URL, a licence payload or a credential.
+   */
+  const copyDiagnostics = () => {
+    const text = `${stage ?? ''}\n${formatTrace(trace, '\n')}`;
+    void navigator.clipboard?.writeText(text)?.then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
   return (
     <div ref={undefined} className="relative mx-auto w-full max-w-5xl" data-protected>
       <video
@@ -636,7 +652,11 @@ export default function DrmVideo({
       {fatal ? (
         <div
           role="alert"
-          className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-lg bg-black/95 p-6 text-center text-white"
+          // z-20 so the diagnostics outrank the watermark (absolute inset-0
+          // z-10): on a phone the faint trace sat underneath the watermark in
+          // every screenshot, which made the only on-device telemetry
+          // unreadable exactly where there is no DevTools to read it from.
+          className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 rounded-lg bg-black/95 p-6 text-center text-white"
         >
           <p className="text-sm font-semibold text-danger">Protected playback unavailable</p>
           <p className="max-w-md text-xs text-white/70">{fatal}</p>
@@ -649,19 +669,33 @@ export default function DrmVideo({
             </p>
           ) : null}
           {trace.length ? (
-            <div
-              data-drm-trace={formatTrace(trace, '>')}
-              className="max-h-40 max-w-md overflow-y-auto whitespace-pre break-all font-mono text-[11px] leading-tight tracking-wider text-white/45 select-none"
-            >
-              {/* One marker per line. The trace is the only DRM telemetry a
-                  student can read back (there is no console on a phone), and as
-                  a single wrapped paragraph it collided with the watermark -
-                  markers went missing and timestamps looked non-monotonic. Each
-                  entry is its own line so `TOKEN@ms` and its `xN` count can
-                  never be split or misread. `whitespace-pre` preserves the
-                  newlines; `break-all` keeps a long token inside the box. */}
-              {formatTrace(trace, '\n')}
-            </div>
+            <>
+              <div
+                data-drm-trace={formatTrace(trace, '>')}
+                className="max-h-40 max-w-md overflow-y-auto whitespace-pre break-all font-mono text-[11px] leading-tight tracking-wider text-white/45 select-text"
+              >
+                {/* One marker per line. The trace is the only DRM telemetry a
+                    student can read back (there is no console on a phone), and as
+                    a single wrapped paragraph it collided with the watermark -
+                    markers went missing and timestamps looked non-monotonic. Each
+                    entry is its own line so `TOKEN@ms` and its `xN` count can
+                    never be split or misread. `whitespace-pre` preserves the
+                    newlines; `break-all` keeps a long token inside the box.
+                    Selectable (`select-text`): on a phone without DevTools,
+                    long-press copy is one of the two ways out. */}
+                {formatTrace(trace, '\n')}
+              </div>
+              {/* The other way out, and the reliable one on mobile: a single
+                  tap puts the stage and the trace on the clipboard. Both are
+                  tokens and numbers only - nothing sensitive can ride along. */}
+              <button
+                type="button"
+                onClick={copyDiagnostics}
+                className="font-mono text-[11px] tracking-wider text-white/60 underline underline-offset-2 hover:text-white/80"
+              >
+                {copied ? 'Copied' : 'Copy diagnostics'}
+              </button>
+            </>
           ) : null}
           <p className="max-w-md text-[11px] text-white/40">
             This lesson is DRM-protected. Protected video cannot be shown in this browser or on this device.
