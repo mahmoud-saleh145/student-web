@@ -40,6 +40,22 @@ import {
   parseFairPlayDiagFlags,
   type TraceEntry,
 } from '@/lib/drm-diagnostics';
+import { needsSafariOnMac } from '@/lib/playback-platform';
+
+/**
+ * Shown instead of the generic "not permitted" when a Mac fails key-system
+ * negotiation in a non-Safari browser.
+ *
+ * Chrome, Edge, Firefox and every other non-WebKit browser on macOS implement
+ * Widevine in software only (L3); macOS gives them no hardware-secure path,
+ * and this component requests `HW_SECURE_ALL` with no software fallback - so
+ * `requestMediaKeySystemAccess` refuses them by design. Safari is the one
+ * browser on a Mac with a DRM the platform can satisfy (FairPlay), and the
+ * ticket request already routes Safari to it (lib/playback-platform.ts).
+ * Nothing here changes the DRM request; it only tells the viewer what works.
+ */
+const MAC_USE_SAFARI_MESSAGE =
+  'On a Mac, protected video plays in Safari only. Please open this lesson in Safari.';
 
 /**
  * DRM video playback for Gumlet-backed lessons.
@@ -218,6 +234,13 @@ export default function DrmVideo({
 
       const widevine = 'com.widevine.alpha';
       const isFairPlay = drm.scheme === 'fairplay';
+      // A Mac in a non-Safari browser holds a Widevine ticket it can never
+      // satisfy at HW_SECURE_ALL (see MAC_USE_SAFARI_MESSAGE). Decided once,
+      // up front, from the user agent only; recorded as a fixed trace token so
+      // a device report says which case this was.
+      const macNeedsSafari =
+        !isFairPlay && needsSafariOnMac(typeof navigator === 'undefined' ? null : navigator);
+      if (macNeedsSafari) mark('UA_MAC_NONSAFARI');
       // Diagnostic experiments (lib/drm-diagnostics.ts). OFF unless the page URL
       // carries exactly `fpks=1_0` or `fpcors=0`, and FairPlay-only: a
       // Widevine ticket never reads them. With no flag the FairPlay key systems
@@ -478,8 +501,15 @@ export default function DrmVideo({
           shaka.util.Error.Code.FAILED_TO_GENERATE_LICENSE_REQUEST,
         ];
         const isLicence = licenceCodes.includes(code);
+        // Key-system negotiation is the step macOS Chrome/Edge/Firefox fail by
+        // design (software-only Widevine against HW_SECURE_ALL). Name the
+        // browser that works on that Mac instead of a dead-end refusal.
+        const macNoKeySystem =
+          macNeedsSafari && code === shaka.util.Error.Code.REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE;
         setFatal(
-          isLicence
+          macNoKeySystem
+            ? MAC_USE_SAFARI_MESSAGE
+            : isLicence
             ? 'This browser or device is not permitted to play protected video.'
             : !isFairPlay && code === shaka.util.Error.Code.VIDEO_ERROR
               ? // VIDEO_ERROR (3016) is raised from the media element for ANY
@@ -553,7 +583,9 @@ export default function DrmVideo({
           fpStage
             ? `Protected playback failed (${fpStage}). Please reload the lesson.`
             : code === shaka.util.Error.Code.REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE
-              ? 'This browser or device is not permitted to play protected video.'
+              ? macNeedsSafari
+                ? MAC_USE_SAFARI_MESSAGE
+                : 'This browser or device is not permitted to play protected video.'
               : `Could not start protected playback (${name}). Please reload the lesson.`,
         );
         const reported = fpStage ? `DRM_FAIRPLAY_${fpStage}` : `DRM_PLAYBACK_${name}`;

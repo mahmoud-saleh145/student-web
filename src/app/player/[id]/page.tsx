@@ -166,10 +166,11 @@ function ProtectedPlayer({
     try {
       // `platform` must reflect the real device: the backend switches to
       // FairPlay only for `ios`. Hardcoding 'web' handed Safari a Widevine
-      // licence URL, and iOS implements FairPlay exclusively.
-      // TEMPORARY hotfix: iOS web also opts in to Gumlet's embed player
-      // (lib/gumlet-embed.ts); a backend that predates the field rejects it,
-      // and the request is then repeated without it.
+      // licence URL, and Safari - on iOS and on macOS alike - implements
+      // FairPlay exclusively (lib/playback-platform.ts).
+      // TEMPORARY hotfix: Safari web (iPhone, iPad and Mac) also opts in to
+      // Gumlet's embed player (lib/gumlet-embed.ts); a backend that predates
+      // the field rejects it, and the request is then repeated without it.
       const platform = detectPlaybackPlatform();
       const body = playbackTicketRequestBody(platform);
       const requestTicket = (payload: object) =>

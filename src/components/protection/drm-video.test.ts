@@ -621,3 +621,51 @@ describe('DrmVideo media-layer failure reporting (evidence-based classes)', () =
     assert.match(code, /needsNativeFairPlayHls\(drm\)/);
   });
 });
+
+/**
+ * THE MACBOOK FAILURE, second half.
+ *
+ * Safari on a Mac is routed to the FairPlay ticket before this component is
+ * ever rendered (lib/playback-platform.ts). Chrome, Edge and Firefox on a Mac
+ * keep the Widevine ticket and cannot satisfy HW_SECURE_ALL - macOS gives
+ * them software Widevine (L3) only - so they are refused at
+ * requestMediaKeySystemAccess with REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE.
+ * That refusal is BY DESIGN and must stay; what changes is that the viewer is
+ * told which browser on their Mac works, instead of a dead-end "not permitted".
+ */
+describe('DrmVideo on a Mac in a non-Safari browser', () => {
+  it('decides the Mac case from the tested helper, on the Widevine branch only', () => {
+    assert.match(code, /import \{ needsSafariOnMac \} from '@\/lib\/playback-platform';/);
+    assert.match(
+      code,
+      /const macNeedsSafari =\s*!isFairPlay && needsSafariOnMac\(/,
+      'a FairPlay ticket (Safari) must never be told to open Safari',
+    );
+    assert.match(code, /mark\('UA_MAC_NONSAFARI'\)/);
+  });
+
+  it('names Safari only for the key-system refusal, on both error paths', () => {
+    // The error event: only REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE qualifies.
+    // A licence rejected over HTTP, or a media error, keeps its own message.
+    assert.match(
+      code,
+      /const macNoKeySystem =\s*macNeedsSafari && code === shaka\.util\.Error\.Code\.REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE;/,
+    );
+    const handler = code.slice(code.indexOf("addEventListener('error'"));
+    assert.match(handler.slice(0, 1500), /macNoKeySystem\s*\?\s*MAC_USE_SAFARI_MESSAGE/);
+    // The load() rejection, where Shaka reports the same refusal on this path.
+    const catchBlock = code.slice(code.indexOf('} catch (e) {'));
+    assert.match(
+      catchBlock.slice(0, 2500),
+      /REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE\s*\?\s*macNeedsSafari\s*\?\s*MAC_USE_SAFARI_MESSAGE/,
+    );
+  });
+
+  it('does not weaken the Widevine request to make a Mac play', () => {
+    // The fix is routing (Safari -> FairPlay) and messaging, never robustness.
+    assert.match(DrmVideo, /videoRobustness: \['HW_SECURE_ALL'\]/);
+    assert.doesNotMatch(DrmVideo, /'SW_SECURE_CRYPTO'/);
+    assert.doesNotMatch(DrmVideo, /'SW_SECURE_DECODE'/);
+    assert.doesNotMatch(code, /macNeedsSafari[^\n]*Robustness/);
+  });
+});
