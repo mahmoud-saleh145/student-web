@@ -260,7 +260,7 @@ export default function LessonPage() {
                           {formatNumber(gi + 1, language)}
                         </span>
                         <span className="min-w-0 flex-1 truncate text-[13px] font-bold">
-                          {g.title || t('web.curriculum')}
+                          {g.unassigned ? t('parts.otherSections') : g.title || t('web.curriculum')}
                         </span>
                         <span className="shrink-0 text-[13px] font-semibold text-subtle">
                           {formatNumber(g.lessonCount, language)}

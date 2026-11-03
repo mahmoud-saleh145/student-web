@@ -287,7 +287,7 @@ export default function CourseDetailPage() {
                           {formatNumber(gi + 1, language)}
                         </span>
                         <span className="min-w-0 flex-1 truncate text-[13px] font-bold">
-                          {g.title || t('web.curriculum')}
+                          {g.unassigned ? t('parts.otherSections') : g.title || t('web.curriculum')}
                         </span>
                         <span className="flex shrink-0 items-center gap-1.5">
                           {g.owned ? <Badge label={t('library.owned')} tone="success" /> : null}
@@ -385,7 +385,13 @@ function PartBlock({
       className={cn(
         showHeader && 'overflow-hidden rounded-2xl border border-border bg-surface-alt/40'
       )}
-      aria-label={showHeader ? group.title || t('parts.partNumber', { index: index + 1 }) : undefined}
+      aria-label={
+        showHeader
+          ? group.unassigned
+            ? t('parts.otherSections')
+            : group.title || t('parts.partNumber', { index: index + 1 })
+          : undefined
+      }
     >
       {showHeader ? (
         <header className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border bg-surface px-4 py-3">
@@ -395,10 +401,18 @@ function PartBlock({
             {formatNumber(index + 1, language)}
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              {t('parts.partNumber', { index: index + 1 })}
-            </p>
-            <h3 className="truncate text-sm font-bold">{group.title}</h3>
+            {group.unassigned ? (
+              /* Sections outside every part: labelled for what they are, not
+                 invented into a "Part N" the administrator never created. */
+              <h3 className="truncate text-sm font-bold">{t('parts.otherSections')}</h3>
+            ) : (
+              <>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                  {t('parts.partNumber', { index: index + 1 })}
+                </p>
+                <h3 className="truncate text-sm font-bold">{group.title}</h3>
+              </>
+            )}
           </div>
           <span className="flex shrink-0 items-center gap-2">
             {group.owned ? <Badge label={t('parts.owned')} tone="success" /> : null}

@@ -1,5 +1,5 @@
 import type { Language } from '@/i18n/dictionaries';
-import { localizedName } from '@/lib/format';
+import { localizedName } from '../lib/format.ts';
 import type { CoursePart, CourseSection } from '@/types/domain';
 
 /**
@@ -30,10 +30,23 @@ export interface CurriculumGroup {
   locked: boolean;
   sections: CourseSection[];
   lessonCount: number;
+  /**
+   * True for the trailing group that holds the course's sections that belong
+   * to no part. Rendered with its own label rather than as "Part N".
+   */
+  unassigned?: boolean;
 }
 
 /**
- * One group per part, in the server's order.
+ * One group per part, in the server's order, then one trailing group for any
+ * section that belongs to no part.
+ *
+ * The trailing group matters: a course's sections and its parts are two
+ * different server answers, and a published section that an administrator has
+ * not (yet) put inside a part is still part of the course. Grouping used to
+ * keep only the sections some part claimed, so such a section simply vanished
+ * from the web outline while the mobile app, which lists sections flat, still
+ * showed it. Nothing the server returns is dropped here any more.
  *
  * Falls back to a single untitled group holding every section when the course
  * has no parts, or when no part matched any section — the second case keeps a
@@ -79,5 +92,21 @@ export function buildCurriculumGroups(
     };
   });
 
-  return groups.some((g) => g.sections.length > 0) ? groups : fallback;
+  if (!groups.some((g) => g.sections.length > 0)) return fallback;
+
+  const claimed = new Set(source.flatMap((part) => part.sections.map((ps) => ps.id)));
+  const unassigned = sections.filter((s) => !claimed.has(s.id));
+  if (unassigned.length > 0) {
+    groups.push({
+      key: 'unassigned',
+      title: '',
+      owned: false,
+      locked: unassigned.every((s) => s.locked),
+      sections: unassigned,
+      lessonCount: unassigned.reduce((n, s) => n + s.lessonCount, 0),
+      unassigned: true,
+    });
+  }
+
+  return groups;
 }
