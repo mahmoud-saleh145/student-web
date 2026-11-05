@@ -1,8 +1,10 @@
 'use client';
 
+import type { PDFDocumentLoadingTask, RenderTask } from 'pdfjs-dist';
 import * as React from 'react';
 
 import { burnWatermark } from '@/components/protection/Watermark';
+import { drawPagesReleasingEach } from '@/lib/pdf-page-loop';
 import { burnImageWatermark, identityWatermarkText, loadWatermarkImage } from '@/lib/pdf-watermark';
 import { pdfjsDocumentOptions } from '@/lib/pdfjs-document';
 import { useTranslation } from '@/lib/session-context';
@@ -48,6 +50,12 @@ export function ProtectedPdf({
     const host = hostRef.current;
     if (!host) return;
 
+    // Held so closing the reader can stop the work and free it: destroying the
+    // loading task ends the document AND its worker thread, which otherwise
+    // outlive the page along with every image they decoded.
+    let loadingTask: PDFDocumentLoadingTask | null = null;
+    let renderTask: RenderTask | null = null;
+
     (async () => {
       try {
         // Requested first so it downloads beside the document. It never
@@ -57,6 +65,9 @@ export function ProtectedPdf({
         const identity = identityWatermarkText(watermark, secondary);
 
         const pdfjs = await import('pdfjs-dist');
+        // Left while the pdf.js module was loading: no task exists yet, so stop
+        // before creating one that nothing would ever destroy.
+        if (cancelled) return;
         pdfjs.GlobalWorkerOptions.workerSrc = new URL(
           'pdfjs-dist/build/pdf.worker.min.mjs',
           import.meta.url
@@ -65,7 +76,8 @@ export function ProtectedPdf({
         // Every PDF.js option for this viewer lives in lib/pdfjs-document.ts, so the
         // rendering configuration is testable and cannot drift. `disableFontFace: true`
         // is load-bearing - see the note there.
-        const doc = await pdfjs.getDocument(pdfjsDocumentOptions(url)).promise;
+        loadingTask = pdfjs.getDocument(pdfjsDocumentOptions(url));
+        const doc = await loadingTask.promise;
         if (cancelled) return;
 
         // Awaited before the first page so every page carries the same marks.
@@ -80,28 +92,42 @@ export function ProtectedPdf({
         // the browser's canvas limit and silently render nothing at all.
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
-        for (let n = 1; n <= doc.numPages; n += 1) {
-          const page = await doc.getPage(n);
-          if (cancelled) return;
+        // One page at a time, each released as soon as its canvas is finished.
+        // The canvas keeps the rendered, watermarked pixels; what is released is
+        // PDF.js's decoded copy of the page's images, which otherwise piles up
+        // page after page - see lib/pdf-page-loop.ts.
+        const completed = await drawPagesReleasingEach(
+          doc,
+          async (page) => {
+            const base = page.getViewport({ scale: 1 });
+            const width = host.clientWidth || 800;
+            const viewport = page.getViewport({ scale: (width / base.width) * dpr });
 
-          const base = page.getViewport({ scale: 1 });
-          const width = host.clientWidth || 800;
-          const viewport = page.getViewport({ scale: (width / base.width) * dpr });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            canvas.className = 'mb-3 block h-auto w-full rounded-lg bg-white shadow-sm';
+            host.appendChild(canvas);
 
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.floor(viewport.width);
-          canvas.height = Math.floor(viewport.height);
-          canvas.className = 'mb-3 block h-auto w-full rounded-lg bg-white shadow-sm';
-          host.appendChild(canvas);
+            const context = canvas.getContext('2d');
+            if (!context) return;
 
-          const context = canvas.getContext('2d');
-          if (!context) continue;
-          await page.render({ canvasContext: context, viewport }).promise;
-          if (image) burnImageWatermark(context, canvas.width, canvas.height, image);
-          burnWatermark(context, canvas.width, canvas.height, identity, dpr);
-        }
+            renderTask = page.render({ canvasContext: context, viewport });
+            try {
+              await renderTask.promise;
+            } finally {
+              renderTask = null;
+            }
 
-        if (!cancelled) setState('ready');
+            // The marks are burned in before the page is released, so every
+            // page that reaches the screen carries them.
+            if (image) burnImageWatermark(context, canvas.width, canvas.height, image);
+            burnWatermark(context, canvas.width, canvas.height, identity, dpr);
+          },
+          () => cancelled
+        );
+
+        if (completed && !cancelled) setState('ready');
       } catch {
         if (!cancelled) setState('failed');
       }
@@ -109,6 +135,9 @@ export function ProtectedPdf({
 
     return () => {
       cancelled = true;
+      renderTask?.cancel();
+      void loadingTask?.destroy();
+      releaseCanvases(host);
     };
   }, [url, watermark, secondary]);
 
@@ -139,4 +168,20 @@ export function ProtectedPdf({
       ) : null}
     </div>
   );
+}
+
+/**
+ * Frees the page canvases when the reader closes or switches document.
+ *
+ * Shrinking a canvas to 0x0 releases its backing store at once. WebKit
+ * otherwise holds it until garbage collection, which on an iPhone can come too
+ * late for the next document. The host has no React children, so emptying it
+ * does not disturb React.
+ */
+function releaseCanvases(host: HTMLElement) {
+  for (const canvas of host.querySelectorAll('canvas')) {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+  host.replaceChildren();
 }
