@@ -67,9 +67,17 @@ export const qk = {
   },
   library: {
     all: ['library'] as const,
-    browse: (filters: object) => [...qk.library.all, 'browse', filters] as const,
-    material: (id: string) => [...qk.library.all, 'material', id] as const,
-    mine: (filters: object) => [...qk.library.all, 'mine', filters] as const,
+    /**
+     * Every Library read is keyed by the signed-in user. What a student may
+     * see — which materials, which view, which parts — is decided per account,
+     * so an answer cached for one account must never be found under the key of
+     * another (a second tab that signed in as someone else shares this
+     * client's cookies but not its memory).
+     */
+    browse: (userId: string, filters: object) =>
+      [...qk.library.all, userId, 'browse', filters] as const,
+    material: (userId: string, id: string) => [...qk.library.all, userId, 'material', id] as const,
+    mine: (userId: string, filters: object) => [...qk.library.all, userId, 'mine', filters] as const,
     purchases: (filters: object) => [...qk.library.all, 'purchases', filters] as const,
     document: (partId: string) => [...qk.library.all, 'document', partId] as const,
   },

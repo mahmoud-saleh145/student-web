@@ -500,6 +500,26 @@ export interface LibrarySubject {
   name: string;
 }
 
+/**
+ * Library wire types, as the Phase 1 backend sends them.
+ *
+ * `access` / `view` / `status` are the contract. The older boolean mirrors
+ * (`owned`, `purchasable`, `isPreview`, `fullyOwned`, `available`) are still
+ * sent during the transition and are read only as a fallback — see
+ * `lib/library.ts`. Everything optional here is something one of the two
+ * views, or an older backend, does not send.
+ */
+export type LibraryPartAccess = "OWNED" | "REVOKED" | "PREVIEW" | "PURCHASABLE" | "UNAVAILABLE";
+export type LibraryPartOwnership = "OWNED" | "REVOKED" | "NONE";
+export type LibraryPackageAccess = "OWNED" | "PURCHASABLE" | "UNAVAILABLE";
+
+export interface LibraryAcademicYear {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  kind: "YEAR" | "LEVEL";
+}
+
 export interface LibraryMaterialSummary {
   id: string;
   title: string;
@@ -507,8 +527,12 @@ export interface LibraryMaterialSummary {
   description: string | null;
   coverUrl: string | null;
   subject: LibrarySubject | null;
+  /** A browse filter only — never who may see the material. */
+  academicYear?: LibraryAcademicYear | null;
   partCount: number;
   packageCount: number;
+  /** Parts of this material the student holds, unrevoked. */
+  ownedPartCount?: number;
   priceFrom: number | null;
   priceTotal: number | null;
 }
@@ -519,15 +543,23 @@ export interface LibraryPart {
   titleAr: string | null;
   description: string | null;
   sortOrder: number;
-  price: number;
-  currency: string;
+  /** Absent in the owner view, which carries no prices. */
+  price?: number;
+  currency?: string;
   pageCount: number | null;
   mimeType: string | null;
-  isPreview: boolean;
-  owned: boolean;
+  access?: LibraryPartAccess;
+  /**
+   * What the student holds, independent of `access` (Decision B): a revoked
+   * part may still be offered as a free preview. Absent from an older backend.
+   */
+  ownership?: LibraryPartOwnership;
   ownedSince: string | null;
-  purchasable: boolean;
   thumbnailUrl?: string | null;
+  /** Deprecated mirrors of `access`. */
+  isPreview?: boolean;
+  owned?: boolean;
+  purchasable?: boolean;
 }
 
 export interface LibraryPackage {
@@ -540,7 +572,9 @@ export interface LibraryPackage {
   partCount: number;
   partIds: string[];
   partsAlreadyOwned: number;
-  fullyOwned: boolean;
+  access?: LibraryPackageAccess;
+  /** Deprecated mirror of `access`. */
+  fullyOwned?: boolean;
 }
 
 export interface LibraryMaterialDetail {
@@ -550,7 +584,15 @@ export interface LibraryMaterialDetail {
   description: string | null;
   coverUrl: string | null;
   subject: LibrarySubject | null;
-  ownsAllParts: boolean;
+  academicYear?: LibraryAcademicYear | null;
+  /**
+   * FULL: in scope with the storefront on. OWNER: the student's own parts
+   * only — no prices, no packages, no counts. Absent from an older backend,
+   * which only ever sent the full view.
+   */
+  view?: "FULL" | "OWNER";
+  /** Full view only. */
+  ownsAllParts?: boolean;
   parts: LibraryPart[];
   packages: LibraryPackage[];
 }
@@ -566,7 +608,9 @@ export interface MyLibraryItem {
   mimeType: string | null;
   source: string;
   grantedAt: string;
-  available: boolean;
+  status?: "READABLE" | "WITHDRAWN";
+  /** Deprecated mirror of `status`. */
+  available?: boolean;
 }
 
 export type LibraryPurchaseKind = "PART" | "PACKAGE";

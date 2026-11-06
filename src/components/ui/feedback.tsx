@@ -92,10 +92,13 @@ export function ErrorState({
   error,
   onRetry,
   compact,
+  messageKey,
 }: {
   error: unknown;
   onRetry?: () => void;
   compact?: boolean;
+  /** A screen-specific message key that replaces the generic mapping. */
+  messageKey?: string | null;
 }) {
   const { t } = useTranslation();
   return (
@@ -110,7 +113,7 @@ export function ErrorState({
       </span>
       <h3 className="mt-4 text-[15px] font-bold">{t("errors.title")}</h3>
       <p className="mt-1 max-w-sm text-[13px] text-muted">
-        {toUserMessage(error, t)}
+        {messageKey ? t(messageKey) : toUserMessage(error, t)}
       </p>
       {onRetry ? (
         <button

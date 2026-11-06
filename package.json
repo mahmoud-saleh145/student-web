@@ -13,6 +13,7 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
+    "test:e2e": "playwright test",
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
@@ -26,14 +27,15 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-hook-form": "^7.54.2",
-    "shaka-player": "4.11.7",
     "react-i18next": "^15.4.0",
+    "shaka-player": "4.11.7",
     "tailwind-merge": "^2.6.0",
     "zod": "^3.24.1",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.7",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4.1.13",
     "@types/node": "^22.10.0",
     "@types/react": "^19.2.0",

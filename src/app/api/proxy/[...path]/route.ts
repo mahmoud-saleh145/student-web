@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { asApiError, httpStatusFor } from '@/lib/errors';
+import { applyProxyCachePolicy } from '@/lib/proxy-cache';
 import { isBlockedPath, isPublicReadPath } from '@/lib/proxy-rules';
 import {
   currentSessionGeneration,
@@ -26,35 +27,51 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  return handleProxy(request, params, 'GET');
+  return proxied(request, params, 'GET');
 }
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  return handleProxy(request, params, 'POST');
+  return proxied(request, params, 'POST');
 }
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  return handleProxy(request, params, 'PUT');
+  return proxied(request, params, 'PUT');
 }
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  return handleProxy(request, params, 'PATCH');
+  return proxied(request, params, 'PATCH');
 }
 
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  return handleProxy(request, params, 'DELETE');
+  return proxied(request, params, 'DELETE');
+}
+
+/**
+ * Every response, success or error, leaves through here so the cache policy is
+ * applied once instead of at each of the many return points below (see
+ * `lib/proxy-cache.ts`: Library answers are never stored).
+ */
+async function proxied(
+  request: NextRequest,
+  params: Promise<{ path: string[] }>,
+  method: string
+) {
+  const response = await handleProxy(request, params, method);
+  const { path } = await params;
+  applyProxyCachePolicy(response.headers, path.join('/'));
+  return response;
 }
 
 function jsonError(status: number, code: string, message: string) {
