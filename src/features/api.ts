@@ -7,6 +7,7 @@ import {
 
 import { api } from "@/lib/api-client";
 import { qk } from "@/lib/query-keys";
+import { useSession } from "@/lib/session-context";
 import type { Paginated } from "@/types/api";
 import type {
   AcademicYear,
@@ -367,14 +368,49 @@ export function useRedeemRecharge() {
   });
 }
 
-export function useLibraryBrowse(q: string) {
+/**
+ * Library reads are authorization-sensitive: the same material can be a full
+ * view with prices one minute and an owner-only view (or a 404) the next — the
+ * storefront switched off, the student's department changed, an entitlement
+ * was revoked. So, unlike the rest of the app:
+ *
+ *  - keys carry the signed-in user (see `qk.library`), and nothing is fetched
+ *    until the user is known;
+ *  - nothing is kept once no screen shows it (`gcTime: 0`) — returning to a
+ *    material never paints a previous answer, with its prices and packages,
+ *    while the current one loads;
+ *  - every mount refetches (`staleTime: 0`).
+ *
+ * The rest of the app keeps its own caching; only these hooks opt out.
+ */
+const LIBRARY_QUERY_POLICY = {
+  staleTime: 0,
+  gcTime: 0,
+  refetchOnMount: "always",
+} as const;
+
+function useLibraryUserId(): string | null {
+  return useSession().user?.id ?? null;
+}
+
+export function useLibraryBrowse(q: string, academicYearId?: string) {
+  const userId = useLibraryUserId();
   return useInfiniteQuery({
-    queryKey: qk.library.browse({ q }),
+    ...LIBRARY_QUERY_POLICY,
+    queryKey: qk.library.browse(userId ?? "anonymous", { q, academicYearId: academicYearId ?? null }),
     queryFn: ({ pageParam, signal }) =>
       api.get<Paginated<LibraryMaterialSummary>>(
-        `library/materials${params({ q: q || undefined, page: pageParam, pageSize: PAGE_SIZE })}`,
+        `library/materials${params({
+          q: q || undefined,
+          // A browse filter: it narrows what the backend already decided this
+          // student may see. It never widens it, and My Library ignores it.
+          academicYearId: academicYearId || undefined,
+          page: pageParam,
+          pageSize: PAGE_SIZE,
+        })}`,
         { signal },
       ),
+    enabled: userId !== null,
     initialPageParam: 1,
     getNextPageParam: (last: Paginated<LibraryMaterialSummary>) =>
       last.meta.hasNext ? last.meta.page + 1 : undefined,
@@ -385,13 +421,16 @@ export function useLibraryBrowse(q: string) {
   });
 }
 export function useMyLibrary() {
+  const userId = useLibraryUserId();
   return useInfiniteQuery({
-    queryKey: qk.library.mine({}),
+    ...LIBRARY_QUERY_POLICY,
+    queryKey: qk.library.mine(userId ?? "anonymous", {}),
     queryFn: ({ pageParam, signal }) =>
       api.get<Paginated<MyLibraryItem>>(
         `library/me${params({ page: pageParam, pageSize: PAGE_SIZE })}`,
         { signal },
       ),
+    enabled: userId !== null,
     initialPageParam: 1,
     getNextPageParam: (last: Paginated<MyLibraryItem>) =>
       last.meta.hasNext ? last.meta.page + 1 : undefined,
@@ -402,11 +441,15 @@ export function useMyLibrary() {
   });
 }
 export function useLibraryMaterial(id: string | undefined) {
+  const userId = useLibraryUserId();
   return useQuery({
-    queryKey: qk.library.material(id ?? "none"),
+    ...LIBRARY_QUERY_POLICY,
+    queryKey: qk.library.material(userId ?? "anonymous", id ?? "none"),
     queryFn: ({ signal }) =>
       api.get<LibraryMaterialDetail>(`library/materials/${id}`, { signal }),
-    enabled: !!id,
+    enabled: !!id && userId !== null,
+    // A refusal (404, 403) is the answer, not a glitch: never retried.
+    retry: false,
   });
 }
 export function useLibraryQuote() {
@@ -415,18 +458,16 @@ export function useLibraryQuote() {
       api.post<LibraryQuote>("library/quote", payload),
   });
 }
-export function useLibraryPurchase(materialId?: string) {
+export function useLibraryPurchase() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (payload: { kind: LibraryPurchaseKind; targetId: string }) =>
       api.post<LibraryPurchaseResult>("library/purchase", payload),
     onSuccess: () => {
+      // The prefix reaches every Library read of every user scope, the
+      // material on screen included.
       void qc.invalidateQueries({ queryKey: qk.library.all });
       void qc.invalidateQueries({ queryKey: qk.wallet.all });
-      if (materialId)
-        void qc.invalidateQueries({
-          queryKey: qk.library.material(materialId),
-        });
     },
   });
 }
@@ -435,6 +476,8 @@ export function useOpenDocument() {
     mutationFn: (partId: string) =>
       api.post<LibraryDocumentTicket>(`library/parts/${partId}/open`, {}),
     retry: false,
+    // The ticket carries a signed URL: nothing keeps it once the reader is gone.
+    gcTime: 0,
   });
 }
 

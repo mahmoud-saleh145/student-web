@@ -524,6 +524,37 @@ const en = {
   "library.alreadyOwnedBody": "You already own this — nothing was charged.",
   "library.packageOverlap":
     "You already own {owned} of the {total} parts in this bundle.",
+  "library.ownerNote":
+    "You're seeing only the documents you own. This material isn't offered to you in the Library right now, but what you bought stays readable.",
+  "library.access.revoked": "Ownership revoked",
+  "library.access.unavailable": "Not available",
+  "library.revokedNote":
+    "Your ownership of one or more documents here was revoked. They can't be bought again, but any free preview still offered here stays open to you — contact support if you think this is a mistake.",
+  "library.packageUnavailable": "This bundle can't be bought right now.",
+  "library.withdrawn": "Withdrawn",
+  "library.storefront.emptyTitle": "No Library materials are available to you right now",
+  "library.storefront.emptyBody":
+    "Materials offered to your faculty and department appear here. Documents you already own are always in My documents.",
+  "library.storefront.openMine": "Open my documents",
+  "library.filter.allYears": "All years and levels",
+  "library.reopen": "Reopen the document",
+  "library.errors.notAvailable": "This isn't available to you in the Library.",
+  "library.errors.revoked": "Your access to this document was revoked.",
+  "library.errors.previewUnavailable": "This free preview isn't available right now.",
+  "library.errors.notOwned": "You haven't bought this document.",
+  "library.errors.withdrawn": "This document has been withdrawn and can no longer be opened.",
+  "library.errors.notForSale": "This isn't available to buy right now.",
+  "library.errors.alreadyOwned": "You already own this.",
+  "library.errors.forbidden": "You don't have permission to open this.",
+  "library.errors.network": "Couldn't reach the server. Check your connection and try again.",
+  "library.errors.ticketExpired":
+    "This reading link has expired or was refused. Reopen the document to continue.",
+  "library.errors.previewLoadFailed":
+    "This free preview couldn't be opened. Try again to check whether it's still available.",
+  "library.errors.verifyUnavailable":
+    "We couldn't verify your access just now. Please try again in a moment.",
+  "library.errors.readerRefused":
+    "This document still can't be opened here. Make sure you're signed in on your approved device, or contact support.",
   "viewer.unsupportedTitle": "This file can't be opened in the browser",
   "viewer.unsupportedBody":
     "To protect the course material, this file type is only viewable inside the mobile app. Open the course from the Student Center app to read it.",
@@ -1014,6 +1045,37 @@ const ar: Record<keyof typeof en, string> = {
   "library.alreadyOwnedBody": "تمتلك هذا بالفعل — لم يُخصم أي مبلغ.",
   "library.packageOverlap":
     "تمتلك بالفعل {owned} من {total} أجزاء في هذه الباقة.",
+  "library.ownerNote":
+    "تعرض هذه الصفحة المستندات التي تمتلكها فقط. هذه المادة غير معروضة لك في المكتبة حاليًا، لكن ما اشتريته يظل متاحًا للقراءة.",
+  "library.access.revoked": "تم إلغاء الملكية",
+  "library.access.unavailable": "غير متاح",
+  "library.revokedNote":
+    "تم إلغاء ملكيتك لمستند أو أكثر هنا، ولا يمكن شراؤها مرة أخرى، لكن أي معاينة مجانية ما زالت معروضة هنا تبقى متاحة لك. تواصل مع الدعم إذا كنت تعتقد أن هذا خطأ.",
+  "library.packageUnavailable": "لا يمكن شراء هذه الباقة حاليًا.",
+  "library.withdrawn": "تم سحبه",
+  "library.storefront.emptyTitle": "لا توجد مواد متاحة لك في المكتبة حاليًا",
+  "library.storefront.emptyBody":
+    "تظهر هنا المواد المعروضة لكليتك وقسمك. المستندات التي تمتلكها موجودة دائمًا في مستنداتي.",
+  "library.storefront.openMine": "افتح مستنداتي",
+  "library.filter.allYears": "كل الفرق والمستويات",
+  "library.reopen": "أعد فتح المستند",
+  "library.errors.notAvailable": "هذا غير متاح لك في المكتبة.",
+  "library.errors.revoked": "تم إلغاء وصولك إلى هذا المستند.",
+  "library.errors.previewUnavailable": "هذه المعاينة المجانية غير متاحة حاليًا.",
+  "library.errors.notOwned": "لم تشترِ هذا المستند.",
+  "library.errors.withdrawn": "تم سحب هذا المستند ولم يعد من الممكن فتحه.",
+  "library.errors.notForSale": "هذا غير متاح للشراء حاليًا.",
+  "library.errors.alreadyOwned": "تمتلك هذا بالفعل.",
+  "library.errors.forbidden": "ليس لديك صلاحية لفتح هذا.",
+  "library.errors.network": "تعذّر الاتصال بالخادم. تحقق من اتصالك وحاول مرة أخرى.",
+  "library.errors.ticketExpired":
+    "انتهت صلاحية رابط القراءة أو تم رفضه. أعد فتح المستند للمتابعة.",
+  "library.errors.previewLoadFailed":
+    "تعذّر فتح هذه المعاينة المجانية. حاول مرة أخرى للتحقق من إتاحتها.",
+  "library.errors.verifyUnavailable":
+    "تعذّر التحقق من صلاحية وصولك الآن. يُرجى المحاولة مرة أخرى بعد قليل.",
+  "library.errors.readerRefused":
+    "لا يزال يتعذّر فتح هذا المستند هنا. تأكد من تسجيل الدخول على جهازك المعتمد، أو تواصل مع الدعم.",
   "viewer.unsupportedTitle": "لا يمكن فتح هذا الملف في المتصفح",
   "viewer.unsupportedBody":
     "لحماية محتوى الكورس، لا يمكن عرض هذا النوع من الملفات إلا داخل تطبيق الموبايل. افتح الكورس من تطبيق Student Center لقراءته.",
