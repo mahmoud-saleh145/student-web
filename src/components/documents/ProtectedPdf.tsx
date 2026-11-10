@@ -4,6 +4,12 @@ import type { PDFDocumentLoadingTask, RenderTask } from 'pdfjs-dist';
 import * as React from 'react';
 
 import { burnWatermark } from '@/components/protection/Watermark';
+import {
+  classifyPdfLoadError,
+  failureReference,
+  type PdfLoadFailure,
+  type PdfLoadPhase,
+} from '@/lib/pdf-load-failure';
 import { drawPagesReleasingEach } from '@/lib/pdf-page-loop';
 import { burnImageWatermark, identityWatermarkText, loadWatermarkImage } from '@/lib/pdf-watermark';
 import { pdfjsDocumentOptions } from '@/lib/pdfjs-document';
@@ -28,6 +34,12 @@ import pdfWatermark from '@/assets/brand/pdf-watermark.png';
  *
  * The worker is loaded from the app's own origin rather than a CDN, so the
  * document never depends on a third party being up or honest.
+ *
+ * pdf.js is loaded from its LEGACY build (pinned by lib/pdfjs-build.test.ts).
+ * The default build calls `Promise.withResolvers` and other
+ * recent APIs without a fallback, so on Safari before 17.4 and Chrome before
+ * 119 opening a document threw before anything was requested, and the student
+ * was told their reading link had expired.
  */
 export function ProtectedPdf({
   url,
@@ -35,6 +47,7 @@ export function ProtectedPdf({
   secondary,
   onReopen,
   describeFailure,
+  onFailure,
 }: {
   url: string;
   /** The student's name, from the ticket. Shown in the corner badge too. */
@@ -50,16 +63,23 @@ export function ProtectedPdf({
    */
   onReopen?: () => void;
   /**
-   * The message for a failed load, and whether to offer `onReopen`. Given the
-   * media gate's HTTP status when it is known. Defaults to the expired-link text.
+   * The message for a failed load, and whether to offer `onReopen`. Given what
+   * actually failed (lib/pdf-load-failure.ts) — never guessed from a missing
+   * status. Without it the generic failure is shown.
    */
-  describeFailure?: (status: number | undefined) => { messageKey: string; canRetry: boolean };
+  describeFailure?: (failure: PdfLoadFailure) => { messageKey: string; canRetry: boolean };
+  /** Told about every failed load, before it is shown, e.g. to retry once. */
+  onFailure?: (failure: PdfLoadFailure) => void;
 }) {
   const { t } = useTranslation();
   const hostRef = React.useRef<HTMLDivElement>(null);
   const [state, setState] = React.useState<'loading' | 'ready' | 'failed'>('loading');
   const [pages, setPages] = React.useState(0);
-  const [failureStatus, setFailureStatus] = React.useState<number | undefined>(undefined);
+  const [failure, setFailure] = React.useState<PdfLoadFailure | null>(null);
+  // Read inside the effect without making it a dependency: a new callback
+  // identity must not restart a document that is already loading.
+  const onFailureRef = React.useRef(onFailure);
+  onFailureRef.current = onFailure;
 
   React.useEffect(() => {
     let cancelled = false;
@@ -69,12 +89,16 @@ export function ProtectedPdf({
     // failure on screen.
     setState('loading');
     setPages(0);
+    setFailure(null);
 
     // Held so closing the reader can stop the work and free it: destroying the
     // loading task ends the document AND its worker thread, which otherwise
     // outlive the page along with every image they decoded.
     let loadingTask: PDFDocumentLoadingTask | null = null;
     let renderTask: RenderTask | null = null;
+    // Which step an error came from: before any request (setup), the document
+    // itself (load), or drawing its pages (render). See classifyPdfLoadError.
+    let phase: PdfLoadPhase = 'setup';
 
     (async () => {
       try {
@@ -84,12 +108,14 @@ export function ProtectedPdf({
         const watermarkImage = loadWatermarkImage(pdfWatermark.src);
         const identity = identityWatermarkText(watermark, secondary);
 
-        const pdfjs = await import('pdfjs-dist');
+        // The legacy build and its matching worker: both halves must come from
+        // the same build. Kept as literal strings so the bundler can see them.
+        const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
         // Left while the pdf.js module was loading: no task exists yet, so stop
         // before creating one that nothing would ever destroy.
         if (cancelled) return;
         pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-          'pdfjs-dist/build/pdf.worker.min.mjs',
+          'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
           import.meta.url
         ).toString();
 
@@ -97,8 +123,10 @@ export function ProtectedPdf({
         // rendering configuration is testable and cannot drift. `disableFontFace: true`
         // is load-bearing - see the note there.
         loadingTask = pdfjs.getDocument(pdfjsDocumentOptions(url));
+        phase = 'load';
         const doc = await loadingTask.promise;
         if (cancelled) return;
+        phase = 'render';
 
         // Awaited before the first page so every page carries the same marks.
         const image = await watermarkImage;
@@ -150,8 +178,10 @@ export function ProtectedPdf({
         if (completed && !cancelled) setState('ready');
       } catch (error) {
         if (!cancelled) {
-          setFailureStatus((error as { status?: number } | null)?.status);
+          const classified = classifyPdfLoadError(error, phase);
+          setFailure(classified);
           setState('failed');
+          onFailureRef.current?.(classified);
         }
       }
     })();
@@ -164,10 +194,7 @@ export function ProtectedPdf({
     };
   }, [url, watermark, secondary]);
 
-  const failure = describeFailure?.(failureStatus) ?? {
-    messageKey: 'library.errors.ticketExpired',
-    canRetry: true,
-  };
+  const described = failure && describeFailure ? describeFailure(failure) : null;
 
   return (
     <div className="relative" data-protected>
@@ -183,10 +210,10 @@ export function ProtectedPdf({
       ) : null}
 
       {state === 'failed' ? (
-        onReopen ? (
+        onReopen && described ? (
           <div className="flex flex-col items-center gap-4 py-20 text-center" role="alert">
-            <p className="max-w-sm text-sm text-danger">{t(failure.messageKey)}</p>
-            {failure.canRetry ? (
+            <p className="max-w-sm text-sm text-danger">{t(described.messageKey)}</p>
+            {described.canRetry ? (
               <button
                 type="button"
                 onClick={onReopen}
@@ -194,6 +221,11 @@ export function ProtectedPdf({
               >
                 {t('library.reopen')}
               </button>
+            ) : null}
+            {failure ? (
+              <p className="text-[11px] text-subtle">
+                {t('library.errors.reference', { code: failureReference(failure) })}
+              </p>
             ) : null}
           </div>
         ) : (

@@ -42,5 +42,14 @@ export function pdfjsDocumentOptions(url: string) {
     withCredentials: false,
     ...pdfjsAssetOptions(),
     disableFontFace: true,
+    // ONE request per ticket, always. pdf.js otherwise switches to 64 KB range
+    // requests whenever a response says `Accept-Ranges: bytes`. Each of those
+    // is a separate trip through the media gate, which re-checks the ticket with
+    // the API every time (about 1.4 s each in production), and a ticket lives
+    // five minutes: a long read would start failing part-way through with
+    // "expired" on whichever range it asked for next. One streamed download
+    // needs the ticket only at its first byte, so expiry can never interrupt a
+    // document that has started to arrive.
+    disableRange: true,
   } as const;
 }

@@ -7,7 +7,8 @@ import { ProtectedPdf } from '@/components/documents/ProtectedPdf';
 import { LibraryErrorState } from '@/components/library/LibraryErrorState';
 import { FocusShell } from '@/components/ui/feedback';
 import { useOpenDocument } from '@/features/api';
-import { readerLoadFailure } from '@/lib/library';
+import { readerAutoRetry, readerLoadFailure } from '@/lib/library';
+import type { PdfLoadFailure } from '@/lib/pdf-load-failure';
 import { useTranslation } from '@/lib/session-context';
 
 /**
@@ -42,6 +43,9 @@ function LibraryReader() {
   const open = useOpenDocument();
   const requested = React.useRef(false);
   const [reopens, setReopens] = React.useState(0);
+  // Quiet retries already spent on this visit. A ref, not state: it must not
+  // re-render, and it must survive the reader remounting ProtectedPdf.
+  const autoRetries = React.useRef(0);
 
   React.useEffect(() => {
     if (!partId || requested.current) return;
@@ -65,6 +69,16 @@ function LibraryReader() {
   const reopen = () => {
     if (!partId) return;
     setReopens((count) => count + 1);
+    open.mutate(partId);
+  };
+  // A dropped connection or a momentary gate/API failure gets ONE new ticket
+  // without the student having to ask. It does not count as a reopen, so it
+  // never shortens the refusal limit, and nothing else is ever retried on its
+  // own: a refusal, a missing or damaged file and an unsupported browser are
+  // shown at once.
+  const onLoadFailure = (failure: PdfLoadFailure) => {
+    if (!partId || !readerAutoRetry(failure, autoRetries.current)) return;
+    autoRetries.current += 1;
     open.mutate(partId);
   };
 
@@ -92,7 +106,8 @@ function LibraryReader() {
           watermark={ticket.watermark.primary}
           secondary={ticket.watermark.secondary}
           onReopen={reopen}
-          describeFailure={(status) => readerLoadFailure({ status, preview, reopens })}
+          onFailure={onLoadFailure}
+          describeFailure={(failure) => readerLoadFailure({ failure, preview, reopens })}
         />
       </div>
       <div className="mt-4 flex items-center justify-between gap-3">
