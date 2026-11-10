@@ -555,6 +555,19 @@ const en = {
     "We couldn't verify your access just now. Please try again in a moment.",
   "library.errors.readerRefused":
     "This document still can't be opened here. Make sure you're signed in on your approved device, or contact support.",
+  "library.errors.downloadInterrupted":
+    "The document stopped downloading before it finished. Check your connection and try again.",
+  "library.errors.deliveryFailed":
+    "The document couldn't be delivered just now. Please try again in a moment.",
+  "library.errors.fileMissing":
+    "This document's file is unavailable right now. Please contact support so it can be restored.",
+  "library.errors.fileDamaged":
+    "This document's file couldn't be read. Please contact support so it can be replaced.",
+  "library.errors.browserUnsupported":
+    "This browser can't display protected documents. Update your browser, or open the document in the Student Center app.",
+  "library.errors.renderFailed":
+    "The document opened but a page couldn't be displayed. Try again, or close other tabs and apps first.",
+  "library.errors.reference": "Reference: {code}",
   "viewer.unsupportedTitle": "This file can't be opened in the browser",
   "viewer.unsupportedBody":
     "To protect the course material, this file type is only viewable inside the mobile app. Open the course from the Student Center app to read it.",
@@ -1076,6 +1089,19 @@ const ar: Record<keyof typeof en, string> = {
     "تعذّر التحقق من صلاحية وصولك الآن. يُرجى المحاولة مرة أخرى بعد قليل.",
   "library.errors.readerRefused":
     "لا يزال يتعذّر فتح هذا المستند هنا. تأكد من تسجيل الدخول على جهازك المعتمد، أو تواصل مع الدعم.",
+  "library.errors.downloadInterrupted":
+    "توقف تحميل المستند قبل اكتماله. تحقق من اتصالك وحاول مرة أخرى.",
+  "library.errors.deliveryFailed":
+    "تعذّر تحميل المستند الآن. يُرجى المحاولة مرة أخرى بعد قليل.",
+  "library.errors.fileMissing":
+    "ملف هذا المستند غير متاح حاليًا. يُرجى التواصل مع الدعم لإعادته.",
+  "library.errors.fileDamaged":
+    "تعذّرت قراءة ملف هذا المستند. يُرجى التواصل مع الدعم لاستبداله.",
+  "library.errors.browserUnsupported":
+    "هذا المتصفح لا يدعم عرض المستندات المحمية. حدّث المتصفح، أو افتح المستند من تطبيق Student Center.",
+  "library.errors.renderFailed":
+    "فُتح المستند لكن تعذّر عرض إحدى صفحاته. حاول مرة أخرى، أو أغلق التبويبات والتطبيقات الأخرى أولًا.",
+  "library.errors.reference": "رمز المرجع: {code}",
   "viewer.unsupportedTitle": "لا يمكن فتح هذا الملف في المتصفح",
   "viewer.unsupportedBody":
     "لحماية محتوى الكورس، لا يمكن عرض هذا النوع من الملفات إلا داخل تطبيق الموبايل. افتح الكورس من تطبيق Student Center لقراءته.",

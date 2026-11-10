@@ -516,7 +516,7 @@ test.describe('reader', () => {
     expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(3);
   });
 
-  test('when the gate cannot verify a ticket, the student is told so, and trying again works', async ({ page }) => {
+  test('when the gate cannot verify a ticket once, the reader quietly asks for one new ticket', async ({ page }) => {
     const backend = newBackend(STUDENT_GENERAL, {
       open: (partId, call) =>
         call === 1
@@ -525,9 +525,148 @@ test.describe('reader', () => {
     });
     await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
 
+    await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+    expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(2);
+  });
+
+  test('when the gate keeps failing to verify, the student is told so, and trying again works', async ({ page }) => {
+    const backend = newBackend(STUDENT_GENERAL, {
+      open: (partId, call) =>
+        call <= 2
+          ? ticket(partId, STUDENT_GENERAL, `${MEDIA}/media/unverifiable.pdf?exp=1&sig=old`)
+          : ticket(partId, STUDENT_GENERAL),
+    });
+    await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
+
     await expect(page.getByText("We couldn't verify your access just now.", { exact: false })).toBeVisible();
+    // One quiet retry, then it waits for the student.
+    expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(2);
     await page.getByRole('button', { name: 'Reopen the document' }).click();
     await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+  });
+
+  // --- The production failure and its neighbours ------------------------------
+  //
+  // Every failure without an HTTP status used to read "This reading link has
+  // expired or was refused", whatever had actually happened.
+
+  test('opens in a browser without Promise.withResolvers (Safari < 17.4, Chrome < 119)', async ({ page }) => {
+    await page.addInitScript(() => {
+      delete (Promise as unknown as { withResolvers?: unknown }).withResolvers;
+    });
+    const backend = newBackend(STUDENT_GENERAL);
+    await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
+
+    await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+    // Scoped to the reader: Next.js keeps its own route announcer as role=alert.
+    await expect(page.locator('[data-protected] [role=alert]')).toHaveCount(0);
+    await expect(page.getByText('This reading link has expired or was refused.', { exact: false })).toHaveCount(0);
+  });
+
+  test('a missing file says so, offers no reopen, and asks for one ticket only', async ({ page }) => {
+    const backend = newBackend(STUDENT_GENERAL, {
+      open: (partId) => ticket(partId, STUDENT_GENERAL, `${MEDIA}/media/missing.pdf?exp=9999999999&sig=test`),
+    });
+    await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
+
+    await expect(page.getByText("This document's file is unavailable right now.", { exact: false })).toBeVisible();
+    await expect(page.getByText('PDF-MISSING-404')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reopen the document' })).toHaveCount(0);
+    await expect(page.getByText('This reading link has expired or was refused.', { exact: false })).toHaveCount(0);
+    expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(1);
+  });
+
+  test('a download cut off part-way is retried once with a NEW ticket, without the student asking', async ({ page }) => {
+    const backend = newBackend(STUDENT_GENERAL, {
+      open: (partId, call) =>
+        call === 1
+          ? ticket(partId, STUDENT_GENERAL, `${MEDIA}/media/cut.pdf?exp=9999999999&sig=first`)
+          : ticket(partId, STUDENT_GENERAL),
+    });
+    await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
+
+    await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+    expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(2);
+    const hits = await mediaHits(page);
+    expect(hits.filter((h) => h.includes('cut.pdf'))).toHaveLength(1);
+  });
+
+  test('a download that keeps dropping says so, stops retrying on its own, and lets the student try', async ({ page }) => {
+    const backend = newBackend(STUDENT_GENERAL, {
+      open: (partId, call) => ticket(partId, STUDENT_GENERAL, `${MEDIA}/media/cut.pdf?exp=9999999999&sig=${call}`),
+    });
+    await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
+
+    const message = page.getByText('The document stopped downloading before it finished.', { exact: false });
+    await expect(message).toBeVisible();
+    await expect(page.getByText('PDF-NETWORK')).toBeVisible();
+    expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(2);
+
+    await page.getByRole('button', { name: 'Reopen the document' }).click();
+    await expect(message).toBeVisible();
+    // The student's own retry, and no more quiet ones: never a loop.
+    await page.waitForTimeout(1500);
+    expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(3);
+  });
+
+  test('still opens when the gate answers a plain read with 206 (the gate deployed before its fix)', async ({ page }) => {
+    const backend = newBackend(STUDENT_GENERAL, {
+      open: (partId) => ticket(partId, STUDENT_GENERAL, `${MEDIA}/media/partial.pdf?exp=9999999999&sig=test`),
+    });
+    await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
+    await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+  });
+
+  test('makes ONE request per ticket even when the gate advertises ranges', async ({ page }) => {
+    const backend = newBackend(STUDENT_GENERAL, {
+      open: (partId) => ticket(partId, STUDENT_GENERAL, `${MEDIA}/media/big.pdf?exp=9999999999&sig=test`),
+    });
+    await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
+    await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+
+    const hits = (await mediaHits(page)).filter((h) => h.includes('big.pdf'));
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).not.toContain('range=');
+  });
+
+  test('reloading the reader asks the server for a new ticket and never reuses the old URL', async ({ page }) => {
+    const backend = newBackend(STUDENT_GENERAL, {
+      open: (partId, call) => ticket(partId, STUDENT_GENERAL, `${MEDIA}/media/doc.pdf?exp=9999999999&sig=call${call}`),
+    });
+    await open(page, backend, STUDENT_GENERAL, '/library/reader/p-1');
+    await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+
+    await page.reload();
+    await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+
+    expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(2);
+    const hits = await mediaHits(page);
+    expect(hits.filter((h) => h.includes('sig=call1'))).toHaveLength(1);
+    expect(hits.filter((h) => h.includes('sig=call2'))).toHaveLength(1);
+  });
+
+  test('two readers open at the same time each get their own ticket and both draw', async ({ page }) => {
+    // Counted here rather than per page: each page has its own route handler.
+    let issued = 0;
+    const backend = newBackend(STUDENT_GENERAL, {
+      open: (partId) => {
+        issued += 1;
+        return ticket(partId, STUDENT_GENERAL, `${MEDIA}/media/doc.pdf?exp=9999999999&sig=tab${issued}`);
+      },
+    });
+    await signInAs(page.context(), STUDENT_GENERAL, test.info().project.use.baseURL as string);
+    const second = await page.context().newPage();
+    await serveBackend(page, backend);
+    await serveBackend(second, backend);
+
+    await Promise.all([page.goto('/library/reader/p-1'), second.goto('/library/reader/p-1')]);
+    await expect(page.locator('[data-protected] canvas')).toHaveCount(1);
+    await expect(second.locator('[data-protected] canvas')).toHaveCount(1);
+
+    expect(backend.calls.filter((c) => c.path === 'library/parts/p-1/open')).toHaveLength(2);
+    const hits = await mediaHits(page);
+    expect(hits.filter((h) => h.includes('sig=tab1'))).toHaveLength(1);
+    expect(hits.filter((h) => h.includes('sig=tab2'))).toHaveLength(1);
   });
 
   test('a revoked entitlement cannot open the document', async ({ page }) => {

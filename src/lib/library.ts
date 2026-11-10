@@ -14,6 +14,8 @@
  * Pure and dependency-free so it runs under `node --test`.
  */
 
+import type { PdfLoadFailure } from './pdf-load-failure.ts';
+
 export type LibraryPartAccess = 'OWNED' | 'REVOKED' | 'PREVIEW' | 'PURCHASABLE' | 'UNAVAILABLE';
 /**
  * What the student holds for a part, independent of what they can do with it
@@ -191,31 +193,75 @@ export function libraryErrorKey(
 export const READER_MAX_REOPENS = 2;
 
 /**
- * What the reader says when a ticket it was given fails to load, and whether it
- * offers another try. `status` is the media gate's HTTP status, when known.
+ * What the reader says when a document it was given fails to load, and whether
+ * it offers another try. `failure` is what actually went wrong
+ * (lib/pdf-load-failure.ts), not just an HTTP status.
  *
- * 503 means the gate could not verify the ticket: nothing was decided, so the
- * message says so and trying again is always offered. Anything else may be a
- * refusal, and asking again re-checks on the server, which then explains itself.
- * If the server keeps issuing tickets the gate keeps refusing, the offer stops
- * after READER_MAX_REOPENS, so a refusal can never become an endless loop.
+ *   unverifiable  503: the gate could not verify the ticket. Nothing was
+ *                 decided, so trying again is always offered.
+ *   refused       401/403/410: the ticket expired or was refused. Asking again
+ *                 re-checks on the server; after READER_MAX_REOPENS the offer
+ *                 stops, so a refusal can never become an endless loop.
+ *   network       the download did not complete. Trying again is offered.
+ *   server        any other gate status. Trying again is offered.
+ *   missing       404: the file is not in storage. A new ticket cannot fix it.
+ *   invalid       the file is damaged. A new ticket cannot fix it.
+ *   client        this browser cannot run the viewer. A new ticket cannot fix it.
+ *   render        a page failed to draw; one more try, then stop.
+ *   unknown       as `render`.
+ *
+ * Every retry is the student's own click and costs one ticket request. The one
+ * automatic retry the reader makes is decided by `readerAutoRetry`.
  */
 export function readerLoadFailure(input: {
-  status: number | undefined;
+  failure: PdfLoadFailure;
   preview: boolean;
   reopens: number;
 }): { messageKey: string; canRetry: boolean } {
-  if (input.status === 503) return { messageKey: 'library.errors.verifyUnavailable', canRetry: true };
-  if (input.reopens >= READER_MAX_REOPENS) {
-    return {
-      messageKey: input.preview ? 'library.errors.previewUnavailable' : 'library.errors.readerRefused',
-      canRetry: false,
-    };
+  const { failure, preview, reopens } = input;
+  const exhausted = reopens >= READER_MAX_REOPENS;
+  switch (failure.kind) {
+    case 'unverifiable':
+      return { messageKey: 'library.errors.verifyUnavailable', canRetry: true };
+    case 'refused':
+      if (exhausted) {
+        return {
+          messageKey: preview ? 'library.errors.previewUnavailable' : 'library.errors.readerRefused',
+          canRetry: false,
+        };
+      }
+      return {
+        messageKey: preview ? 'library.errors.previewLoadFailed' : 'library.errors.ticketExpired',
+        canRetry: true,
+      };
+    case 'network':
+      return { messageKey: 'library.errors.downloadInterrupted', canRetry: true };
+    case 'server':
+      return { messageKey: 'library.errors.deliveryFailed', canRetry: true };
+    case 'missing':
+      return { messageKey: 'library.errors.fileMissing', canRetry: false };
+    case 'invalid':
+      return { messageKey: 'library.errors.fileDamaged', canRetry: false };
+    case 'client':
+      return { messageKey: 'library.errors.browserUnsupported', canRetry: false };
+    case 'render':
+      return { messageKey: 'library.errors.renderFailed', canRetry: !exhausted };
+    default:
+      return { messageKey: 'library.errors.deliveryFailed', canRetry: !exhausted };
   }
-  return {
-    messageKey: input.preview ? 'library.errors.previewLoadFailed' : 'library.errors.ticketExpired',
-    canRetry: true,
-  };
+}
+
+/**
+ * Whether the reader should quietly ask for one new ticket before showing an
+ * error. Only for failures that are plausibly momentary (the connection
+ * dropped, the gate or the API hiccuped) and only once per visit: a refusal is
+ * never retried automatically, and nothing that a new ticket cannot fix is.
+ */
+export const READER_AUTO_RETRIES = 1;
+
+export function readerAutoRetry(failure: PdfLoadFailure, autoRetries: number): boolean {
+  if (autoRetries >= READER_AUTO_RETRIES) return false;
+  return failure.kind === 'network' || failure.kind === 'unverifiable' || failure.kind === 'server';
 }
 
 /** Whether trying again could help — a refusal will not change on retry. */

@@ -10,20 +10,24 @@ import {
   partAccess,
   partActions,
   partOwnership,
+  READER_AUTO_RETRIES,
   READER_MAX_REOPENS,
+  readerAutoRetry,
   readerLoadFailure,
   visibleParts,
   type PartAccessInput,
 } from './library.ts';
+import type { PdfLoadFailure } from './pdf-load-failure.ts';
 
 describe('readerLoadFailure', () => {
-  const failure = (status: number | undefined, preview: boolean, reopens: number) =>
-    readerLoadFailure({ status, preview, reopens });
+  const failure = (failureIn: PdfLoadFailure, preview: boolean, reopens: number) =>
+    readerLoadFailure({ failure: failureIn, preview, reopens });
+  const refused: PdfLoadFailure = { kind: 'refused', status: 403 };
 
   it('503 says access could not be verified, and always offers another try', () => {
     for (const preview of [true, false]) {
       for (const reopens of [0, READER_MAX_REOPENS, READER_MAX_REOPENS + 5]) {
-        assert.deepEqual(failure(503, preview, reopens), {
+        assert.deepEqual(failure({ kind: 'unverifiable', status: 503 }, preview, reopens), {
           messageKey: 'library.errors.verifyUnavailable',
           canRetry: true,
         });
@@ -32,25 +36,73 @@ describe('readerLoadFailure', () => {
   });
 
   it('a refused owned document offers a new ticket, then stops', () => {
-    assert.deepEqual(failure(403, false, 0), { messageKey: 'library.errors.ticketExpired', canRetry: true });
-    assert.deepEqual(failure(403, false, READER_MAX_REOPENS - 1), { messageKey: 'library.errors.ticketExpired', canRetry: true });
-    assert.deepEqual(failure(403, false, READER_MAX_REOPENS), { messageKey: 'library.errors.readerRefused', canRetry: false });
+    assert.deepEqual(failure(refused, false, 0), { messageKey: 'library.errors.ticketExpired', canRetry: true });
+    assert.deepEqual(failure(refused, false, READER_MAX_REOPENS - 1), { messageKey: 'library.errors.ticketExpired', canRetry: true });
+    assert.deepEqual(failure(refused, false, READER_MAX_REOPENS), { messageKey: 'library.errors.readerRefused', canRetry: false });
   });
 
   it('a refused preview speaks about the preview, then stops: no reopen loop', () => {
-    assert.deepEqual(failure(403, true, 0), { messageKey: 'library.errors.previewLoadFailed', canRetry: true });
-    assert.deepEqual(failure(403, true, READER_MAX_REOPENS), { messageKey: 'library.errors.previewUnavailable', canRetry: false });
+    assert.deepEqual(failure(refused, true, 0), { messageKey: 'library.errors.previewLoadFailed', canRetry: true });
+    assert.deepEqual(failure(refused, true, READER_MAX_REOPENS), { messageKey: 'library.errors.previewUnavailable', canRetry: false });
   });
 
-  it('a failure with no known status is treated as a possible refusal', () => {
-    assert.deepEqual(failure(undefined, false, 0), { messageKey: 'library.errors.ticketExpired', canRetry: true });
-    assert.equal(failure(undefined, true, READER_MAX_REOPENS).canRetry, false);
+  it('only a refusal from the gate is ever described as an expired or refused link', () => {
+    // The production defect: every failure without an HTTP status was shown as
+    // "the reading link has expired or was refused".
+    for (const kind of ['network', 'server', 'missing', 'invalid', 'client', 'render', 'unknown'] as const) {
+      for (const preview of [true, false]) {
+        const { messageKey } = failure({ kind }, preview, 0);
+        assert.notEqual(messageKey, 'library.errors.ticketExpired', kind);
+        assert.notEqual(messageKey, 'library.errors.previewLoadFailed', kind);
+      }
+    }
+  });
+
+  it('what a new ticket cannot fix is never offered as a retry', () => {
+    assert.deepEqual(failure({ kind: 'missing', status: 404 }, false, 0), { messageKey: 'library.errors.fileMissing', canRetry: false });
+    assert.deepEqual(failure({ kind: 'invalid' }, false, 0), { messageKey: 'library.errors.fileDamaged', canRetry: false });
+    assert.deepEqual(failure({ kind: 'client' }, false, 0), { messageKey: 'library.errors.browserUnsupported', canRetry: false });
+  });
+
+  it('a dropped download or a gate error says so, and offers another try', () => {
+    assert.deepEqual(failure({ kind: 'network' }, false, READER_MAX_REOPENS), { messageKey: 'library.errors.downloadInterrupted', canRetry: true });
+    assert.deepEqual(failure({ kind: 'server', status: 500 }, true, 0), { messageKey: 'library.errors.deliveryFailed', canRetry: true });
+  });
+
+  it('a page that would not draw, or an unknown failure, gets a bounded retry', () => {
+    assert.equal(failure({ kind: 'render' }, false, 0).canRetry, true);
+    assert.equal(failure({ kind: 'render' }, false, READER_MAX_REOPENS).canRetry, false);
+    assert.equal(failure({ kind: 'unknown' }, false, 0).canRetry, true);
+    assert.equal(failure({ kind: 'unknown' }, false, READER_MAX_REOPENS).canRetry, false);
   });
 
   it('never mentions a device for a preview, which needs no approved device', () => {
     for (const reopens of [0, READER_MAX_REOPENS]) {
-      assert.notEqual(failure(403, true, reopens).messageKey, 'library.errors.readerRefused');
+      assert.notEqual(failure(refused, true, reopens).messageKey, 'library.errors.readerRefused');
     }
+  });
+});
+
+describe('readerAutoRetry', () => {
+  it('retries a momentary failure once, and only once', () => {
+    for (const kind of ['network', 'server', 'unverifiable'] as const) {
+      assert.equal(readerAutoRetry({ kind }, 0), true, kind);
+      assert.equal(readerAutoRetry({ kind }, READER_AUTO_RETRIES), false, kind);
+    }
+  });
+
+  it('never retries a refusal, or anything a new ticket cannot fix, on its own', () => {
+    for (const kind of ['refused', 'missing', 'invalid', 'client', 'render', 'unknown'] as const) {
+      assert.equal(readerAutoRetry({ kind }, 0), false, kind);
+    }
+  });
+
+  it('cannot loop: a failure that keeps happening stops after the allowance', () => {
+    let retries = 0;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (readerAutoRetry({ kind: 'network' }, retries)) retries += 1;
+    }
+    assert.equal(retries, READER_AUTO_RETRIES);
   });
 });
 

@@ -68,3 +68,19 @@ describe('the rest of the delivery configuration is preserved', () => {
     assert.equal(opts.cMapPacked, true);
   });
 });
+
+describe('one request per ticket', () => {
+  const opts = pdfjsDocumentOptions('https://gate.example/signed-doc.pdf');
+
+  it('never switches to range requests, whatever the media gate advertises', () => {
+    // Each range request would be another trip through the gate (and another
+    // liveness check with the API), and a five-minute ticket would expire
+    // part-way through a long read. One streamed download needs the ticket only
+    // at its first byte.
+    assert.equal(opts.disableRange, true);
+  });
+
+  it('still streams the document rather than waiting for a second request', () => {
+    assert.ok(!('disableStream' in opts) || (opts as { disableStream?: boolean }).disableStream === false);
+  });
+});
