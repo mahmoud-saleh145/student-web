@@ -87,10 +87,45 @@ describe('buildCurriculumGroups', () => {
     assert.deepEqual(groups[0]!.sections.map((s) => s.id), ['a', 'b']);
   });
 
-  it('falls back to one flat group when no part matches any section', () => {
+  it('keeps every part when no part matches any section, with the sections in the trailing group', () => {
+    // This used to collapse to one header-less list, which removed every
+    // part header — and every "Unlock this part" button — from the page.
     const groups = buildCurriculumGroups([section('a')], [part('p1', ['gone'])], 'en');
-    assert.deepEqual(groups.map((g) => g.key), ['all']);
-    assert.deepEqual(groups[0]!.sections.map((s) => s.id), ['a']);
+    assert.deepEqual(groups.map((g) => g.key), ['p1', 'unassigned']);
+    assert.deepEqual(groups[1]!.sections.map((s) => s.id), ['a']);
+  });
+
+  it('keeps a completely empty part, locked when unowned', () => {
+    const groups = buildCurriculumGroups(
+      [section('a')],
+      [part('before', ['a'], true), part('after', [])],
+      'en',
+    );
+    assert.deepEqual(groups.map((g) => g.key), ['before', 'after']);
+    assert.equal(groups[1]!.sections.length, 0);
+    assert.equal(groups[1]!.lessonCount, 0);
+    assert.equal(groups[1]!.owned, false);
+    assert.equal(groups[1]!.locked, true);
+  });
+
+  it('keeps all parts when every part is empty and the course has no sections', () => {
+    const groups = buildCurriculumGroups([], [part('before', []), part('after', [])], 'en');
+    assert.deepEqual(groups.map((g) => g.key), ['before', 'after']);
+    assert.ok(groups.every((g) => !g.owned && g.locked));
+  });
+
+  it('keeps three or more parts in server order', () => {
+    const groups = buildCurriculumGroups(
+      [section('a'), section('b')],
+      [part('p1', ['a'], true), part('p2', []), part('p3', ['b'])],
+      'en',
+    );
+    assert.deepEqual(groups.map((g) => g.key), ['p1', 'p2', 'p3']);
+  });
+
+  it('never reads a missing owned flag as owned', () => {
+    const p = { ...part('p1', ['a']), owned: undefined } as unknown as CoursePart;
+    assert.equal(buildCurriculumGroups([section('a', true)], [p], 'en')[0]!.owned, false);
   });
 
   it('uses the Arabic part title when the language is Arabic', () => {

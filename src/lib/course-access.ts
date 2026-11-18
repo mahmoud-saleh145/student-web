@@ -84,47 +84,95 @@ export function joinSheetActions(options: {
   fullCourse: { owned: boolean };
   accessState?: AccessState;
   hasParts?: boolean;
-  parts?: ReadonlyArray<{ owned: boolean }>;
+  parts?: ReadonlyArray<{ owned?: unknown }>;
 }): { free: boolean; approval: boolean; code: boolean; none: boolean } {
   const owned = options.fullCourse.owned;
-  const partUpgrade = isPartUpgrade(options);
+  const partCode = partCodeAvailable(options);
   return {
     free: options.enrollmentMethods.includes('FREE') && !owned,
     approval: options.enrollmentMethods.includes('ADMIN_APPROVAL') && !owned,
-    code: (options.enrollmentMethods.includes('CODE') || partUpgrade) && options.methods.accessCode,
-    none: options.enrollmentMethods.length === 0 && !partUpgrade,
+    code: (options.enrollmentMethods.includes('CODE') || partCode) && options.methods.accessCode,
+    none: options.enrollmentMethods.length === 0 && !partCode,
   };
 }
 
-/** ACTIVE on a course with parts, without the whole course, and a part still to buy. */
-export function isPartUpgrade(options: {
+/**
+ * Access states in which a student may not acquire anything themselves: a
+ * revoked enrolment is an administrative decision, and an archived one belongs
+ * to a course that is no longer on sale. Every other state may redeem a card.
+ */
+const NO_SELF_SERVICE: ReadonlySet<AccessState> = new Set(['REVOKED', 'ARCHIVED']);
+
+/**
+ * True only when the server said, in so many words, that the student does not
+ * own this part. A missing, null or non-boolean `owned` is "unknown", and an
+ * unknown part is never offered for sale — guessing "not owned" would invite a
+ * student to pay again for what they hold.
+ */
+export function isUnownedPart(part: { owned?: unknown } | null | undefined): boolean {
+  return part != null && part.owned === false;
+}
+
+/**
+ * A course with parts, not owned whole, with at least one part the server
+ * reports unowned, for a student allowed to acquire things. Part cards are the
+ * only way a part is sold, so the code box must be reachable here even when
+ * `enrollmentMethods` is empty — which it always is for an ACTIVE student.
+ */
+function partCodeAvailable(options: {
   fullCourse: { owned: boolean };
   accessState?: AccessState;
   hasParts?: boolean;
-  parts?: ReadonlyArray<{ owned: boolean }>;
+  parts?: ReadonlyArray<{ owned?: unknown }>;
 }): boolean {
   return (
-    options.accessState === 'ACTIVE' &&
+    options.accessState !== undefined &&
+    !NO_SELF_SERVICE.has(options.accessState) &&
     !options.fullCourse.owned &&
     options.hasParts === true &&
-    (options.parts ?? []).some((p) => !p.owned)
+    (options.parts ?? []).some(isUnownedPart)
   );
 }
 
 /**
- * Whether a part's header on the course page gets its own "Unlock this part"
- * button, which opens the join sheet with that part preselected.
- *
- * Ownership is the server's per-part `owned` flag from `GET /courses/:id/parts`
- * and nothing else — not a lock derived from lessons, and never a synthetic
- * curriculum group (the "other sections" bucket is not a part and cannot be
- * bought). Parts are sold only as access cards, so the button appears only
- * where a code could actually be redeemed for this course: a published course
- * the server lists CODE for (not joined, or expired), or one the student is
- * already ACTIVE on — the part-upgrade case above.
+ * ACTIVE on a course with parts, without the whole course, and a part still to
+ * buy — the student is adding to what they have. Only changes the sheet's
+ * wording ("Unlock a part"); what the sheet offers is `joinSheetActions`.
  */
-export function canUnlockPart(course: CourseAccessInput, part: { owned: boolean } | undefined): boolean {
-  if (!part || part.owned) return false;
+export function isPartUpgrade(options: {
+  fullCourse: { owned: boolean };
+  accessState?: AccessState;
+  hasParts?: boolean;
+  parts?: ReadonlyArray<{ owned?: unknown }>;
+}): boolean {
+  return options.accessState === 'ACTIVE' && partCodeAvailable(options);
+}
+
+/**
+ * THE rule for the "Unlock this part" button in a part's header:
+ *
+ *   show = the part exists in `GET /courses/:id/parts`
+ *          && the server reports it `owned: false`
+ *          && the student does not own the whole course (`ownsAllParts`)
+ *          && the course is published and the student is not revoked/archived.
+ *
+ * Nothing about the part's CONTENT enters into it — not its section count, its
+ * lesson count, whether its lessons are published, `course.sections[].locked`,
+ * or free previews. An empty part is still a part that can be sold, and the
+ * old content-derived checks are exactly what hid the button. Nor does it
+ * depend on the part's name or on how many parts the course has. The
+ * synthetic "other sections" group is not in `/parts`, so it never matches.
+ *
+ * The button only opens the existing sheet. Whether a code unlocks anything —
+ * and what — is decided by `POST /courses/:id/redeem` from the code's scope.
+ */
+export function canUnlockPart(
+  course: CourseAccessInput,
+  part: { owned?: unknown } | null | undefined,
+  parts?: { ownsAllParts?: unknown } | null,
+): boolean {
+  if (!isUnownedPart(part)) return false;
+  if (parts?.ownsAllParts === true) return false;
   if (course.status !== 'PUBLISHED') return false;
-  return course.access.state === 'ACTIVE' || course.access.availableMethods.includes('CODE');
+  return !NO_SELF_SERVICE.has(course.access.state);
 }

@@ -82,17 +82,22 @@ export function buildCurriculumGroups(
     return {
       key: part.id,
       title: localizedName({ name: part.title, nameAr: part.titleAr }, language),
-      owned: part.owned,
+      owned: part.owned === true,
       // A part is locked when nothing in it can be opened. Derived from the
       // sections rather than from the part's price so a free preview inside a
-      // paid part still reads as reachable.
-      locked: matched.length > 0 && matched.every((s) => s.locked),
+      // paid part still reads as reachable. An EMPTY unowned part is locked
+      // too — it used to read as unlocked, which is the opposite of the truth.
+      locked: part.owned !== true && matched.every((s) => s.locked),
       sections: matched,
       lessonCount: matched.reduce((n, s) => n + s.lessonCount, 0),
     };
   });
 
-  if (!groups.some((g) => g.sections.length > 0)) return fallback;
+  // Every part the server listed is kept, even one with no sections yet. This
+  // used to fall back to one flat, header-less list whenever no part matched a
+  // section — so a course whose parts were all still empty showed no parts at
+  // all, and with them went every part's "Unlock this part" button. Nothing is
+  // lost by keeping them: sections no part claims go to the trailing group.
 
   const claimed = new Set(source.flatMap((part) => part.sections.map((ps) => ps.id)));
   const unassigned = sections.filter((s) => !claimed.has(s.id));

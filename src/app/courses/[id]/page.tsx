@@ -94,6 +94,22 @@ export default function CourseDetailPage() {
   const hasParts = groups.length > 1 || groups.some((g) => g.title !== '');
   const currentLessonId = course.progress?.lastLessonId ?? null;
 
+  /**
+   * The "Unlock this part" handler for a curriculum group, or undefined when
+   * it gets no button. One rule (`canUnlockPart`) for both places a part
+   * header is drawn — the content tab and the always-visible curriculum card —
+   * fed only by the server's part list, never by the group's content.
+   */
+  const unlockHandler = (groupKey: string): (() => void) | undefined => {
+    const partsData = partsQuery.data;
+    const part = partsData?.hasParts ? partsData.parts.find((p) => p.id === groupKey) : undefined;
+    if (!canUnlockPart(course, part, partsData)) return undefined;
+    return () => {
+      setJoinPartId(groupKey);
+      setJoinOpen(true);
+    };
+  };
+
   return (
     <AppShell>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -195,7 +211,9 @@ export default function CourseDetailPage() {
             ) : null}
 
             {tab === 'content' ? (
-              course.sections.length === 0 ? (
+              // A course with parts always shows them, even before any section
+              // is published: an empty part is still a part a student can unlock.
+              !hasParts && course.sections.length === 0 ? (
                 <Card>
                   <p className="py-6 text-center text-sm text-muted">{t('courses.empty.sectionsBody')}</p>
                 </Card>
@@ -212,17 +230,7 @@ export default function CourseDetailPage() {
                       showHeader={hasParts}
                       currentLessonId={currentLessonId}
                       onOpenLesson={openLesson}
-                      onUnlock={
-                        canUnlockPart(
-                          course,
-                          partsQuery.data?.hasParts ? partsQuery.data.parts.find((p) => p.id === group.key) : undefined
-                        )
-                          ? () => {
-                              setJoinPartId(group.key);
-                              setJoinOpen(true);
-                            }
-                          : undefined
-                      }
+                      onUnlock={unlockHandler(group.key)}
                     />
                   ))}
                 </div>
@@ -286,7 +294,7 @@ export default function CourseDetailPage() {
             <CardTitle action={<span className="text-[13px] font-semibold text-muted">{formatNumber(course.lessonCount, language)}</span>}>
               {t('web.curriculum')}
             </CardTitle>
-            {groups.length === 0 || groups.every((g) => g.sections.length === 0) ? (
+            {!hasParts && (groups.length === 0 || groups.every((g) => g.sections.length === 0)) ? (
               <p className="py-4 text-center text-[13px] text-muted">{t('courses.empty.sectionsBody')}</p>
             ) : (
               /* The narrow mirror of the content tab. Each part is a bordered
@@ -294,7 +302,9 @@ export default function CourseDetailPage() {
                  Course -> Part -> lesson story as the main column instead of
                  running the parts together. */
               <div className="flex flex-col gap-2.5">
-                {groups.map((g, gi) => (
+                {groups.map((g, gi) => {
+                  const onUnlock = unlockHandler(g.key);
+                  return (
                   <div
                     key={g.key}
                     className={cn(
@@ -302,7 +312,7 @@ export default function CourseDetailPage() {
                     )}
                   >
                     {hasParts ? (
-                      <div className="flex items-center gap-2 border-b border-border bg-surface px-2.5 py-2">
+                      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-2.5 py-2">
                         <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-primary text-[11px] font-bold text-primary-fg">
                           {formatNumber(gi + 1, language)}
                         </span>
@@ -315,7 +325,16 @@ export default function CourseDetailPage() {
                             {formatNumber(g.lessonCount, language)}
                           </span>
                         </span>
+                        {onUnlock ? (
+                          <Button size="sm" fullWidth onClick={onUnlock}>
+                            <LockIcon size={13} />
+                            {t('access.unlockPart')}
+                          </Button>
+                        ) : null}
                       </div>
+                    ) : null}
+                    {hasParts && g.sections.length === 0 ? (
+                      <p className="px-2.5 py-2 text-[12px] text-muted">{t('parts.emptyPart')}</p>
                     ) : null}
                     <div className={cn('flex flex-col', hasParts && 'p-1')}>
                       {g.sections.map((s) => (
@@ -358,7 +377,8 @@ export default function CourseDetailPage() {
                       ))}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </Card>
