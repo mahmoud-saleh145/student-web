@@ -11,12 +11,12 @@ import { CheckIcon, ClockIcon, FileIcon, LayersIcon, LockIcon, PlayIcon, ShieldI
 import { SupportLinks } from '@/components/support/SupportLinks';
 import { useCourse, useCourseParts, useEnroll, useJoinOptions, useRedeemCourseCode } from '@/features/api';
 import { buildCurriculumGroups, type CurriculumGroup } from '@/features/curriculum';
-import { ACCESS_BADGE, courseAccessFlags, joinLabel, joinSheetActions } from '@/lib/course-access';
+import { ACCESS_BADGE, canUnlockPart, courseAccessFlags, isPartUpgrade, joinLabel, joinSheetActions } from '@/lib/course-access';
 import { formatDate, formatDuration, formatMoney, formatNumber, localizedName } from '@/lib/format';
 import { useSession, useTranslation } from '@/lib/session-context';
 import { cn } from '@/lib/utils';
 import { toast } from '@/store/stores';
-import type { AccessState, CourseDetail, CourseJoinOptions, LessonSummary } from '@/types/domain';
+import type { AccessState, CourseDetail, CourseJoinOptions, CoursePart, LessonSummary } from '@/types/domain';
 
 type Tab = 'overview' | 'content' | 'materials';
 
@@ -34,6 +34,8 @@ export default function CourseDetailPage() {
   const router = useRouter();
   const [tab, setTab] = React.useState<Tab>('overview');
   const [joinOpen, setJoinOpen] = React.useState(false);
+  /** The part whose own "Unlock" button opened the sheet, preselected in it. */
+  const [joinPartId, setJoinPartId] = React.useState<string | null>(null);
   const query = useCourse(id);
   const partsQuery = useCourseParts(id);
   const course = query.data;
@@ -210,6 +212,17 @@ export default function CourseDetailPage() {
                       showHeader={hasParts}
                       currentLessonId={currentLessonId}
                       onOpenLesson={openLesson}
+                      onUnlock={
+                        canUnlockPart(
+                          course,
+                          partsQuery.data?.hasParts ? partsQuery.data.parts.find((p) => p.id === group.key) : undefined
+                        )
+                          ? () => {
+                              setJoinPartId(group.key);
+                              setJoinOpen(true);
+                            }
+                          : undefined
+                      }
                     />
                   ))}
                 </div>
@@ -260,7 +273,14 @@ export default function CourseDetailPage() {
             the viewport, scrolling the whole page sideways. Above `lg` the
             track is pinned to 340px, so this changes nothing on desktop. */}
         <aside className="min-w-0 space-y-4 lg:sticky lg:top-20 lg:self-start">
-          <EnrollmentCard course={course} onJoin={() => setJoinOpen(true)} onContinue={continueLearning} />
+          <EnrollmentCard
+            course={course}
+            onJoin={() => {
+              setJoinPartId(null);
+              setJoinOpen(true);
+            }}
+            onContinue={continueLearning}
+          />
 
           <Card>
             <CardTitle action={<span className="text-[13px] font-semibold text-muted">{formatNumber(course.lessonCount, language)}</span>}>
@@ -345,7 +365,13 @@ export default function CourseDetailPage() {
         </aside>
       </div>
 
-      <JoinSheet courseId={course.id} open={joinOpen} onClose={() => setJoinOpen(false)} />
+      <JoinSheet
+        courseId={course.id}
+        accessState={course.access.state}
+        focusPartId={joinPartId}
+        open={joinOpen}
+        onClose={() => setJoinOpen(false)}
+      />
     </AppShell>
   );
 }
@@ -371,12 +397,15 @@ function PartBlock({
   showHeader,
   currentLessonId,
   onOpenLesson,
+  onUnlock,
 }: {
   group: CurriculumGroup;
   index: number;
   showHeader: boolean;
   currentLessonId: string | null;
   onOpenLesson: (lesson: LessonSummary) => void;
+  /** Set only when this part can be unlocked with a code; opens the join sheet on it. */
+  onUnlock?: () => void;
 }) {
   const { t, language } = useTranslation();
 
@@ -420,6 +449,12 @@ function PartBlock({
             <span className="text-[13px] font-semibold text-muted">
               {t('parts.lessonCount', { count: group.lessonCount })}
             </span>
+            {onUnlock ? (
+              <Button size="sm" onClick={onUnlock}>
+                <LockIcon size={13} />
+                {t('access.unlockPart')}
+              </Button>
+            ) : null}
           </span>
         </header>
       ) : null}
@@ -648,22 +683,43 @@ function JoinOption({
   subtitle,
   price,
   owned,
+  ownedLabel,
+  showLocked = false,
   selected,
   onSelect,
+  optionRef,
 }: {
   title: string;
   subtitle?: string;
   price: string | null;
   owned: boolean;
+  /** What to call an owned option: "Already unlocked", "Full course access"… */
+  ownedLabel?: string;
+  /** Mark an unowned part as available to unlock, so it reads apart from the owned ones. */
+  showLocked?: boolean;
   selected: boolean;
   onSelect: () => void;
+  optionRef?: React.Ref<HTMLDivElement>;
 }) {
   const { t } = useTranslation();
   return (
-    <div className={cn('flex flex-col gap-1.5 rounded-lg border p-3', selected ? 'border-primary bg-primary-soft' : 'border-border bg-surface')}>
-      <div className="flex items-center justify-between gap-2">
+    <div
+      ref={optionRef}
+      className={cn(
+        'flex flex-col gap-1.5 rounded-lg border p-3',
+        owned ? 'border-success/40 bg-success/5' : selected ? 'border-primary bg-primary-soft' : 'border-border bg-surface'
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="min-w-0 flex-1 text-sm font-semibold">{title}</span>
-        {owned ? <Badge label={t('parts.owned')} tone="success" /> : price ? <span className="text-sm font-bold">{price}</span> : null}
+        {owned ? (
+          <Badge label={ownedLabel ?? t('parts.owned')} tone="success" />
+        ) : (
+          <span className="flex shrink-0 items-center gap-2">
+            {showLocked ? <Badge label={t('access.availableToUnlock')} tone="warning" /> : null}
+            {price ? <span className="text-sm font-bold">{price}</span> : null}
+          </span>
+        )}
       </div>
       {subtitle ? <p className="text-[13px] text-muted">{subtitle}</p> : null}
       {owned ? null : (
@@ -682,23 +738,57 @@ function JoinOption({
  * payment is never offered — the platform sells courses with cash cards, not
  * cards online.
  */
-function JoinSheet({ courseId, open, onClose }: { courseId: string; open: boolean; onClose: () => void }) {
-  return <JoinSheetBody key={open ? 'open' : 'closed'} courseId={courseId} open={open} onClose={onClose} />;
+interface JoinSheetProps {
+  courseId: string;
+  /** The course's access state from `GET /courses/:id`, the server's verdict. */
+  accessState: AccessState;
+  /**
+   * The part whose own "Unlock this part" button opened the sheet. It is only
+   * preselected, and only while the server still reports it unowned; the
+   * sheet shows the whole course and every part regardless.
+   */
+  focusPartId: string | null;
+  open: boolean;
+  onClose: () => void;
 }
 
-function JoinSheetBody({ courseId, open, onClose }: { courseId: string; open: boolean; onClose: () => void }) {
+function JoinSheet(props: JoinSheetProps) {
+  return <JoinSheetBody key={props.open ? `open:${props.focusPartId ?? ''}` : 'closed'} {...props} />;
+}
+
+function JoinSheetBody({ courseId, accessState, focusPartId, open, onClose }: JoinSheetProps) {
   const { t, language } = useTranslation();
   const options = useJoinOptions(courseId, open);
   const enroll = useEnroll(courseId);
   const redeem = useRedeemCourseCode(courseId);
   const [code, setCode] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
-  const [intent, setIntent] = React.useState<string | null>(null);
+  const [intent, setIntent] = React.useState<string | null>(focusPartId);
+  const focusRef = React.useRef<HTMLDivElement>(null);
 
   const data: CourseJoinOptions | undefined = options.data;
 
+  // Ownership comes from `/join-options`, never from what the page assumed
+  // when the button was pressed: a part that turns out to be owned is not
+  // left selected.
+  const focusPart = data?.parts.find((p) => p.id === focusPartId);
+  React.useEffect(() => {
+    if (!focusPart) return;
+    if (focusPart.owned) setIntent((current) => (current === focusPart.id ? null : current));
+    else focusRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [focusPart]);
+
+  const partOwnedLabel = (part: CoursePart) =>
+    part.ownedVia === 'FULL_COURSE' ? t('access.includedInFullCourse') : t('access.alreadyUnlocked');
+
+  const actions = data ? joinSheetActions({ ...data, accessState }) : null;
+  /** Already ACTIVE through a part, adding another (e.g. After Midterm). */
+  const upgrade = data ? isPartUpgrade({ ...data, accessState }) : false;
+
   const afterJoin = (state: AccessState) => {
-    if (state === 'ACTIVE') toast.success(t('access.joinedBody'));
+    // The redeem/enroll hooks invalidate every course query, so the page's
+    // parts, sections and lesson locks refetch from the server on their own.
+    if (state === 'ACTIVE') toast.success(upgrade ? t('access.partUnlockedBody') : t('access.joinedBody'));
     else if (state === 'PENDING_APPROVAL') toast.info(t('access.pendingBody'));
     else if (state === 'PENDING_PAYMENT') toast.info(t('access.paymentPendingBody'));
     onClose();
@@ -729,10 +819,8 @@ function JoinSheetBody({ courseId, open, onClose }: { courseId: string; open: bo
     }
   };
 
-  const actions = data ? joinSheetActions(data) : null;
-
   return (
-    <Sheet open={open} onClose={onClose} title={t('access.joinTitle')}>
+    <Sheet open={open} onClose={onClose} title={upgrade ? t('access.unlockPartTitle') : t('access.joinTitle')}>
       {options.isLoading ? (
         <p className="py-8 text-center text-sm text-muted">{t('common.loading')}</p>
       ) : options.isError || !data || !actions ? (
@@ -740,7 +828,7 @@ function JoinSheetBody({ courseId, open, onClose }: { courseId: string; open: bo
       ) : (
         <div className="flex flex-col gap-3 pb-2">
           <p className="text-sm font-semibold">{localizedName({ name: data.title, nameAr: data.titleAr }, language)}</p>
-          <p className="text-sm text-muted">{t('access.joinIntro')}</p>
+          <p className="text-sm text-muted">{upgrade ? t('access.upgradeIntro') : t('access.joinIntro')}</p>
 
           <JoinOption
             title={t('access.fullCourse')}
@@ -753,6 +841,7 @@ function JoinSheetBody({ courseId, open, onClose }: { courseId: string; open: bo
                   : formatMoney({ amount: data.fullCourse.price, currency: data.fullCourse.currency }, language)
             }
             owned={data.fullCourse.owned}
+            ownedLabel={t('access.fullCourseAccess')}
             selected={intent === 'FULL'}
             onSelect={() => setIntent('FULL')}
           />
@@ -767,8 +856,11 @@ function JoinSheetBody({ courseId, open, onClose }: { courseId: string; open: bo
                   subtitle={t('parts.sectionCount', { count: part.sectionCount })}
                   price={part.price === null ? null : formatMoney({ amount: part.price, currency: part.currency }, language)}
                   owned={part.owned}
+                  ownedLabel={partOwnedLabel(part)}
+                  showLocked
                   selected={intent === part.id}
                   onSelect={() => setIntent(part.id)}
+                  optionRef={part.id === focusPartId ? focusRef : undefined}
                 />
               ))}
             </div>

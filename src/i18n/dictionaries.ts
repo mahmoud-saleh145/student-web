@@ -444,6 +444,15 @@ const en = {
   "access.cardHintGeneric":
     "Choose an option above, then enter the code from the card you were given.",
   "access.codeRequired": "Enter the code from your card.",
+  "access.unlockPart": "Unlock this part",
+  "access.unlockPartTitle": "Unlock a part",
+  "access.upgradeIntro":
+    "You already have part of this course. Enter the code from the card for the part you want to add. Your current access stays as it is.",
+  "access.alreadyUnlocked": "Already unlocked",
+  "access.includedInFullCourse": "Included in full course",
+  "access.fullCourseAccess": "Full course access",
+  "access.availableToUnlock": "Locked",
+  "access.partUnlockedBody": "Part unlocked. Its lessons are now open.",
   "player.fullscreen": "Enter fullscreen",
   "player.exitFullscreen": "Exit fullscreen",
   "profile.avatarUpdated": "Photo updated.",
@@ -986,6 +995,15 @@ const ar: Record<keyof typeof en, string> = {
   "access.cardHintGeneric":
     "اختر أحد الخيارات أعلاه، ثم أدخل الرمز الموجود على الكرت الذي حصلت عليه.",
   "access.codeRequired": "أدخل الرمز الموجود على الكرت.",
+  "access.unlockPart": "افتح هذا الجزء",
+  "access.unlockPartTitle": "فتح جزء من الكورس",
+  "access.upgradeIntro":
+    "لديك بالفعل جزء من هذا الكورس. أدخل رمز الكرت الخاص بالجزء الذي تريد إضافته، وسيبقى وصولك الحالي كما هو.",
+  "access.alreadyUnlocked": "تم فتح الجزء بالفعل",
+  "access.includedInFullCourse": "مشمول في الكورس الكامل",
+  "access.fullCourseAccess": "لديك الكورس كاملًا",
+  "access.availableToUnlock": "مُقفل",
+  "access.partUnlockedBody": "تم فتح الجزء، ودروسه متاحة الآن.",
   "player.fullscreen": "ملء الشاشة",
   "player.exitFullscreen": "إنهاء ملء الشاشة",
   "profile.avatarUpdated": "تم تحديث الصورة.",
