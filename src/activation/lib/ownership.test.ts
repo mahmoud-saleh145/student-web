@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   canEnterCode,
   courseOwnership,
+  ownershipKnownFor,
   redeemPrecheck,
   unlockSummary,
   type OwnershipSnapshot,
@@ -186,5 +187,20 @@ describe('unlockSummary — reports only what the server changed', () => {
     const before = snapshot({ sections: [] });
     const after = snapshot({ accessState: 'ACTIVE', sections: [section('s9', false)] });
     assert.deepEqual(unlockSummary(before, after).sections, []);
+  });
+});
+
+describe('ownershipKnownFor', () => {
+  it('a part card needs the owned parts from at least one of the two requests', () => {
+    assert.equal(ownershipKnownFor('PART', { parts: null, joinOptions: null }), false);
+    assert.equal(ownershipKnownFor('PART', { parts: undefined, joinOptions: undefined }), false);
+    assert.equal(ownershipKnownFor('PART', { parts: { hasParts: false, parts: [] }, joinOptions: null }), true);
+    assert.equal(ownershipKnownFor('PART', { parts: null, joinOptions: { hasParts: true, parts: [] } }), true);
+  });
+
+  it('other cards are checked against the course itself, which is always there', () => {
+    for (const type of ['SECTION', 'COURSE', 'TEACHER']) {
+      assert.equal(ownershipKnownFor(type, { parts: null, joinOptions: null }), true, type);
+    }
   });
 });

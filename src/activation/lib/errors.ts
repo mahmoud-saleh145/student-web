@@ -20,6 +20,19 @@
 
 export type ActivationErrorContext = 'course-code' | 'recharge' | 'general';
 
+/**
+ * Did the backend actually answer "no"?
+ *
+ * A 4xx is a refusal: the card was not used. Anything else — no response at
+ * all (status 0: a dropped connection, a timeout), or a 5xx from a proxy that
+ * gave up waiting — says nothing about whether the redemption was committed.
+ * The caller must then ask the server what the student holds before telling
+ * them anything, because "it failed, try again" may be false.
+ */
+export function isDefiniteRefusal(status: number | undefined): boolean {
+  return typeof status === 'number' && status >= 400 && status < 500;
+}
+
 export function activationErrorKey(
   code: string | undefined,
   status: number | undefined,

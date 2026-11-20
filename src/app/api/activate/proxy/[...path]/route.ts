@@ -1,6 +1,10 @@
 import type { NextRequest, NextResponse } from 'next/server';
 
-import { isAllowedActivationBody, isAllowedActivationRequest } from '@/activation/lib/proxy-allowlist';
+import {
+  isAllowedActivationBody,
+  isAllowedActivationRequest,
+  normalizeActivationPath,
+} from '@/activation/lib/proxy-allowlist';
 import {
   isActivationRefreshCoolingDown,
   isActivationSessionEnded,
@@ -63,11 +67,14 @@ async function handle(
   method: 'GET' | 'POST',
 ): Promise<NextResponse> {
   const { path } = await params;
-  const pathStr = path.join('/');
+  const rawPath = path.join('/');
 
-  if (!isAllowedActivationRequest(method, pathStr)) {
+  if (!isAllowedActivationRequest(method, rawPath)) {
     return activationError(403, 'PATH_NOT_ALLOWED', 'Path not allowed');
   }
+  // What was checked is what is forwarded: the same normalised path, not the
+  // spelling it arrived in.
+  const pathStr = normalizeActivationPath(rawPath);
 
   if (method !== 'GET') {
     const refused = refuseCrossSite(request);

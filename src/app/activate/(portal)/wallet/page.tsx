@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import * as React from 'react';
 
 import { useActivationRecharge, useActivationWallet, useActivationWalletTransactions } from '@/activation/api';
-import { cardCodeProblem, normalizeCardCode, wrongPlaceFor } from '@/activation/lib/errors';
+import { cardCodeProblem, isDefiniteRefusal, normalizeCardCode, wrongPlaceFor } from '@/activation/lib/errors';
 import { saveLastActivation } from '@/activation/lib/last-activation';
 import { activationRoutes } from '@/activation/lib/routes';
 import { useActivationSession } from '@/activation/session';
@@ -55,6 +55,7 @@ export default function ActivationWalletPage() {
 
     busy.current = true;
     setMessage(null);
+    const balanceBefore = wallet.data?.balance;
     try {
       const res = await recharge.mutateAsync(cardCode);
       setCode('');
@@ -68,6 +69,25 @@ export default function ActivationWalletPage() {
       }
       router.push(activationRoutes.success);
     } catch (e) {
+      if (!isDefiniteRefusal(e instanceof ApiError ? e.status : undefined)) {
+        // No answer, or a gateway that gave up: the card may have been
+        // credited. Read the balance again before saying anything.
+        const fresh = await wallet.refetch().catch(() => null);
+        const balanceNow = fresh?.data?.balance;
+        if (user && fresh?.data && balanceBefore !== undefined && balanceNow !== undefined && balanceNow > balanceBefore) {
+          setCode('');
+          saveLastActivation(window.sessionStorage, user.id, {
+            kind: 'recharge',
+            credited: balanceNow - balanceBefore,
+            balance: balanceNow,
+            currency: fresh.data.currency,
+          });
+          router.push(activationRoutes.success);
+          return;
+        }
+        setMessage({ text: t('act.err.unknownOutcomeWallet'), toCourses: false });
+        return;
+      }
       const apiCode = e instanceof ApiError ? e.code : undefined;
       setMessage({ text: activationErrorMessage(e, t, 'recharge'), toCourses: wrongPlaceFor(apiCode, 'recharge') === 'courses' });
     } finally {
@@ -135,8 +155,15 @@ export default function ActivationWalletPage() {
     [t, language, typeLabel, amountCell],
   );
 
+  // A figure that could not be loaded is shown as unknown, never as zero.
   const money = (amount: number | undefined) =>
-    wallet.isLoading ? <Skeleton className="h-6 w-24" /> : formatMoney({ amount: amount ?? 0, currency }, language);
+    wallet.isLoading ? (
+      <Skeleton className="h-6 w-24" />
+    ) : amount === undefined ? (
+      '—'
+    ) : (
+      formatMoney({ amount, currency }, language)
+    );
 
   return (
     <>

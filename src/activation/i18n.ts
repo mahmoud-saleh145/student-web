@@ -114,6 +114,12 @@ const en = {
   'act.err.partUnavailable': 'The part this card is for is not available right now. Your card was not used.',
   'act.err.alreadyOwned': 'You already have everything this card unlocks. Your card was not used.',
   'act.err.rateLimited': 'Too many attempts. Wait a few minutes, then try again.',
+  'act.err.cannotCheck': 'We could not check what you already own, so your card was not used. Try again in a moment.',
+  'act.err.unknownOutcome':
+    'We could not confirm whether your card was used. Check “My activations” before entering it again.',
+  'act.err.unknownOutcomeWallet':
+    'We could not confirm whether your card was used. Check your balance and history below before entering it again.',
+  'act.err.unexpected': 'Something unexpected happened. Refresh the page and check before trying again.',
   'act.err.goToWallet': 'Go to Credit',
   'act.err.goToCourses': 'Go to Courses',
 
@@ -297,6 +303,11 @@ const ar: Record<ActivationKey, string> = {
   'act.err.partUnavailable': 'الجزء الخاص بهذا الكرت غير متاح حاليًا. لم يُستخدم الكرت.',
   'act.err.alreadyOwned': 'لديك بالفعل كل ما يفتحه هذا الكرت. لم يُستخدم الكرت.',
   'act.err.rateLimited': 'محاولات كثيرة. انتظر بضع دقائق ثم حاول مجددًا.',
+  'act.err.cannotCheck': 'تعذّر التحقق مما تمتلكه بالفعل، لذلك لم يُستخدم الكرت. حاول مرة أخرى بعد قليل.',
+  'act.err.unknownOutcome': 'تعذّر التأكد مما إذا كان الكرت قد استُخدم. راجع «تفعيلاتي» قبل إدخاله مرة أخرى.',
+  'act.err.unknownOutcomeWallet':
+    'تعذّر التأكد مما إذا كان الكرت قد استُخدم. راجع رصيدك والسجل بالأسفل قبل إدخاله مرة أخرى.',
+  'act.err.unexpected': 'حدث شيء غير متوقع. حدّث الصفحة وتحقق قبل المحاولة مرة أخرى.',
   'act.err.goToWallet': 'اذهب إلى الرصيد',
   'act.err.goToCourses': 'اذهب إلى الكورسات',
 

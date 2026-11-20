@@ -78,7 +78,14 @@ export async function getActivationRefreshToken(): Promise<string | null> {
 
 /** The display snapshot written at sign-in; identity is still `auth/me`. */
 export async function getActivationProfile(): Promise<ActivationProfile | null> {
-  const raw = (await cookies()).get(activationCookieNames.profile)?.value;
+  const jar = await cookies();
+  // The profile is a label for a session, not a session. Without a token
+  // cookie beside it there is nobody signed in — and saying otherwise would
+  // send the sign-in page to a portal the middleware then sends straight back.
+  if (!jar.get(activationCookieNames.accessToken)?.value && !jar.get(activationCookieNames.refreshToken)?.value) {
+    return null;
+  }
+  const raw = jar.get(activationCookieNames.profile)?.value;
   if (!raw) return null;
   try {
     const value = JSON.parse(raw) as Partial<ActivationProfile> | null;

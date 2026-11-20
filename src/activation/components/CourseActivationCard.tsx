@@ -19,16 +19,17 @@ import {
   useRefreshCourseOwnership,
   useValidateCourseCode,
 } from '../api';
-import { cardCodeProblem, normalizeCardCode, wrongPlaceFor } from '../lib/errors';
+import { cardCodeProblem, isDefiniteRefusal, normalizeCardCode, wrongPlaceFor } from '../lib/errors';
 import { saveLastActivation, type CourseOutcome } from '../lib/last-activation';
 import {
   buildSnapshot,
   canEnterCode,
   courseOwnership,
-  redeemPrecheck,
-  unlockSummary,
+  ownershipKnownFor,
   type OwnershipSnapshot,
+  redeemPrecheck,
   type RedeemPrecheck,
+  unlockSummary,
   type UnlockSummary,
 } from '../lib/ownership';
 import { activationRoutes } from '../lib/routes';
@@ -175,10 +176,29 @@ export function CourseActivationCard({
     try {
       await redeem.mutateAsync(cardCode);
     } catch (e) {
-      fail(e);
-      // A refusal can itself mean ownership changed elsewhere (already
-      // enrolled, card already used): show the server's current answer.
-      void refreshOwnership().catch(() => undefined);
+      if (isDefiniteRefusal(e instanceof ApiError ? e.status : undefined)) {
+        fail(e);
+        // A refusal can itself mean ownership changed elsewhere (already
+        // enrolled, card already used): show the server's current answer.
+        void refreshOwnership().catch(() => undefined);
+        return;
+      }
+
+      // No answer, or a gateway that gave up: the redemption may have been
+      // committed. Ask the server what the student holds now before saying
+      // anything — "it failed, try again" could cost them a card that worked.
+      try {
+        const fresh = await refreshOwnership();
+        const summary = unlockSummary(before, buildSnapshot(fresh));
+        if (!summary.nothingNew) {
+          setCode('');
+          finish('unlocked', summary, validation);
+          return;
+        }
+      } catch {
+        // Still no answer: say exactly that, below.
+      }
+      setMessage({ text: t('act.err.unknownOutcome'), goTo: null });
       return;
     }
 
@@ -213,7 +233,14 @@ export function CourseActivationCard({
       // Read-only: names the card's kind without using it.
       const validation = await validate.mutateAsync(cardCode);
       // Ownership as the server sees it right now, not as this page last saw it.
-      const before = buildSnapshot(await refreshOwnership());
+      const current = await refreshOwnership();
+      if (!ownershipKnownFor(validation.targetType, current)) {
+        // Nothing has been spent. Better to stop than to check a part card
+        // against a list of owned parts that could not be loaded.
+        setMessage({ text: t('act.err.cannotCheck'), goTo: null });
+        return;
+      }
+      const before = buildSnapshot(current);
       const precheck = redeemPrecheck({ targetType: validation.targetType, sectionId: validation.section?.id }, before);
 
       if (precheck.action === 'block') {
@@ -260,6 +287,7 @@ export function CourseActivationCard({
       await refreshOwnership().catch(() => undefined);
       if (result.state === 'ACTIVE') finish('joined', null, null);
       else if (result.state === 'PENDING_APPROVAL') finish('pending-approval', null, null);
+      else setMessage({ text: t('act.err.unexpected'), goTo: null });
     } catch (e) {
       fail(e);
     } finally {

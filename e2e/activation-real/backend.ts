@@ -37,6 +37,18 @@ if (!new URL(DATABASE_URL).pathname.endsWith('_test')) {
 const BACKEND_DIR = process.env.BACKEND_DIR;
 if (!BACKEND_DIR) throw new Error('BACKEND_DIR is not set.');
 
+// The same two refusals as `seed.cjs`: never the default Redis port (this
+// file flushes that Redis), never a backend checkout with a `.env` beside it.
+const redisPort = new URL(REDIS_URL).port;
+if (redisPort === '' || redisPort === '6379') {
+  throw new Error('Refusing to run: REDIS_URL uses the default Redis port. Use the dedicated throwaway instance.');
+}
+for (const name of ['.env', '.env.local']) {
+  if (fs.existsSync(path.join(path.resolve(BACKEND_DIR), name))) {
+    throw new Error(`Refusing to run: ${BACKEND_DIR} contains ${name}, so its backend may not be using the throwaway database.`);
+  }
+}
+
 const backendRequire = createRequire(path.join(path.resolve(BACKEND_DIR), 'package.json'));
 
 export interface Fixtures {

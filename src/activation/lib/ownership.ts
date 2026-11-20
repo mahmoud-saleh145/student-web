@@ -83,6 +83,24 @@ export function buildSnapshot(input: {
   };
 }
 
+/**
+ * Can the pre-redemption check be trusted for this kind of card?
+ *
+ * A part card is checked against the parts the student owns, and those come
+ * from two requests that can each fail on their own. If BOTH failed, the
+ * snapshot's `parts` is an empty list that means "unknown", not "none" — and a
+ * check made against it would wave through exactly the duplicate it exists to
+ * stop. Section, course and teacher cards are checked against the course
+ * itself, which is always present.
+ */
+export function ownershipKnownFor(
+  targetType: string,
+  sources: { parts: unknown; joinOptions: unknown },
+): boolean {
+  if (targetType !== 'PART') return true;
+  return sources.parts != null || sources.joinOptions != null;
+}
+
 // ---------------------------------------------------------------------------
 // What the student holds
 // ---------------------------------------------------------------------------

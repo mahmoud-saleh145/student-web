@@ -3,6 +3,7 @@ import type { NextRequest } from 'next/server';
 import { clearActivationRefreshCooldown, markActivationSessionEnded } from '@/activation/server/refresh-state';
 import { activationError, activationJson, refuseCrossSite } from '@/activation/server/respond';
 import {
+  getActivationAccessToken,
   getActivationRefreshToken,
   isActivationProfile,
   setActivationProfileCookie,
@@ -98,6 +99,16 @@ export async function POST(request: NextRequest) {
     // A refresh still in flight for the session this browser held before must
     // not write its result over the tokens set below. Scoped to that one
     // session's token: nobody else's refresh is disturbed by this sign-in.
+    // Signing in over a session that is still open in this browser: end the
+    // old one on the backend too, rather than leaving it to expire. Best
+    // effort — the new session does not depend on it.
+    const replacedAccessToken = await getActivationAccessToken();
+    if (replacedAccessToken && replacedAccessToken !== accessToken) {
+      await backendRequest({ method: 'POST', path: '/auth/logout', accessToken: replacedAccessToken }).catch(
+        () => undefined,
+      );
+    }
+
     markActivationSessionEnded(await getActivationRefreshToken());
     clearActivationRefreshCooldown();
 

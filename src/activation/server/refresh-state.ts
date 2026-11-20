@@ -32,6 +32,14 @@ import type { RefreshOutcome } from '@/lib/refresh-lock';
  *
  * Module state is the right scope: the racing requests are handled by one
  * Node process. Entries are short-lived and pruned on use.
+ *
+ * BOUNDED
+ * Sign-out reaches `markActivationSessionEnded` with whatever the request's
+ * cookie holds, before anything has vouched for it. So the list of ended
+ * tokens is capped, and a value too long to be a token is not stored at all:
+ * a flood of made-up cookies can cost a fixed, small amount of memory and
+ * nothing more. Dropping the oldest entry early only shortens a protection
+ * for a race that is already over.
  */
 
 const COOLDOWN_MS = 30_000;
@@ -39,6 +47,10 @@ const COOLDOWN_MS = 30_000;
 export const REFRESH_REUSE_WINDOW_MS = 20_000;
 /** How long an ended token is remembered — longer than any request can run. */
 const ENDED_TTL_MS = 5 * 60_000;
+/** The most ended tokens remembered at once; the oldest is dropped first. */
+export const MAX_ENDED_TOKENS = 2_000;
+/** Longer than any refresh token the backend issues. */
+const MAX_TOKEN_LENGTH = 512;
 
 const inflight = new Map<string, Promise<RefreshOutcome>>();
 const recent = new Map<string, { outcome: RefreshOutcome; at: number }>();
@@ -69,10 +81,25 @@ export function clearActivationRefreshCooldown(): void {
  * or replaced by a new sign-in). A refresh result for it must be discarded.
  */
 export function markActivationSessionEnded(refreshToken: string | null | undefined, now: number = Date.now()): void {
-  if (!refreshToken) return;
+  if (!refreshToken || refreshToken.length > MAX_TOKEN_LENGTH) return;
   prune(now);
+
+  // Re-inserted so the map's order is "oldest first" by the time it was ended.
+  ended.delete(refreshToken);
   ended.set(refreshToken, now);
+  while (ended.size > MAX_ENDED_TOKENS) {
+    const oldest = ended.keys().next().value;
+    if (oldest === undefined) break;
+    ended.delete(oldest);
+  }
+
   recent.delete(refreshToken);
+  // The refresh that PRODUCED this token is still on record under the token
+  // before it. A straggler holding that older token must not be handed the
+  // ended session's tokens back.
+  for (const [previous, entry] of recent) {
+    if (entry.outcome.ok && entry.outcome.refreshToken === refreshToken) recent.delete(previous);
+  }
 }
 
 export function isActivationSessionEnded(refreshToken: string, now: number = Date.now()): boolean {
@@ -111,6 +138,11 @@ export function singleFlightActivationRefresh(
 
   inflight.set(refreshToken, started);
   return started;
+}
+
+/** Tests only: how many ended tokens are currently remembered. */
+export function endedActivationTokenCountForTests(): number {
+  return ended.size;
 }
 
 /** Tests only. */

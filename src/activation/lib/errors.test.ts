@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { activationDictionaries } from '../i18n.ts';
-import { activationErrorKey, cardCodeProblem, normalizeCardCode, wrongPlaceFor } from './errors.ts';
+import { activationErrorKey, cardCodeProblem, isDefiniteRefusal, normalizeCardCode, wrongPlaceFor } from './errors.ts';
 
 describe('activationErrorKey', () => {
   it('words a refused course code for the course screen', () => {
@@ -104,5 +104,15 @@ describe('portal dictionary', () => {
         key,
       );
     }
+  });
+});
+
+describe('isDefiniteRefusal', () => {
+  it('is true only for an answer the backend actually gave: a 4xx', () => {
+    for (const status of [400, 401, 403, 404, 409, 422, 429]) assert.equal(isDefiniteRefusal(status), true, String(status));
+  });
+
+  it('is false when nothing came back, or a gateway gave up', () => {
+    for (const status of [0, 500, 502, 503, 504, undefined]) assert.equal(isDefiniteRefusal(status), false, String(status));
   });
 });

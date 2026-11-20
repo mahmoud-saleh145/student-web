@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
 
 import {
+  MAX_ENDED_TOKENS,
   REFRESH_REUSE_WINDOW_MS,
   clearActivationRefreshCooldown,
+  endedActivationTokenCountForTests,
   isActivationRefreshCoolingDown,
   isActivationSessionEnded,
   markActivationSessionEnded,
@@ -128,5 +130,47 @@ describe('cooldown', () => {
     noteActivationRefreshFailure(1_000);
     clearActivationRefreshCooldown();
     assert.equal(isActivationRefreshCoolingDown(1_001), false);
+  });
+});
+
+describe('ended tokens are bounded', () => {
+  it('never remembers more than the cap, dropping the oldest first', () => {
+    resetActivationRefreshStateForTests();
+    const now = 1_000_000;
+    for (let i = 0; i < MAX_ENDED_TOKENS + 500; i += 1) markActivationSessionEnded(`token-${i}`, now);
+    assert.equal(endedActivationTokenCountForTests(), MAX_ENDED_TOKENS);
+    assert.equal(isActivationSessionEnded('token-0', now), false);
+    assert.equal(isActivationSessionEnded(`token-${MAX_ENDED_TOKENS + 499}`, now), true);
+  });
+
+  it('does not store a value too long to be a token', () => {
+    resetActivationRefreshStateForTests();
+    markActivationSessionEnded('x'.repeat(4000), 1_000);
+    assert.equal(endedActivationTokenCountForTests(), 0);
+  });
+
+  it('ending a session also forgets the refresh that produced its token', async () => {
+    resetActivationRefreshStateForTests();
+    const now = 5_000;
+    // RT0 was refreshed into RT1 a moment ago.
+    await singleFlightActivationRefresh(
+      'RT0',
+      async () => ({ ok: true, accessToken: 'AT1', refreshToken: 'RT1' }) as never,
+      now,
+    );
+    // The student signs out of the RT1 session.
+    markActivationSessionEnded('RT1', now + 1_000);
+
+    // A straggler still holding RT0 must not be handed AT1/RT1 back.
+    let ran = false;
+    await singleFlightActivationRefresh(
+      'RT0',
+      async () => {
+        ran = true;
+        return { ok: false, status: 401, code: 'UNAUTHORIZED', message: 'reused' } as never;
+      },
+      now + 2_000,
+    );
+    assert.equal(ran, true);
   });
 });

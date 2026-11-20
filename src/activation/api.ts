@@ -405,7 +405,10 @@ export function useActivationRecharge() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (code: string) => activationApi.post<RechargeResult>('wallet/redeem', { code }),
-    onSuccess: () => {
+    // On failure too: a response that never arrived says nothing about
+    // whether the card was credited, so the balance on screen must not be the
+    // one from before the attempt.
+    onSettled: () => {
       void qc.invalidateQueries({ queryKey: aqk.wallet(userId) });
       void qc.invalidateQueries({ queryKey: aqk.library(userId) });
     },

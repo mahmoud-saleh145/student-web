@@ -42,6 +42,9 @@ export function isActivationPublicPage(pathname: string): boolean {
   return clean(pathname) === ACTIVATION_LOGIN;
 }
 
+/** A base that exists only to resolve a relative `next` against. */
+const NEXT_BASE = 'http://portal.invalid';
+
 /**
  * Where to go after signing in to the portal.
  *
@@ -51,9 +54,25 @@ export function isActivationPublicPage(pathname: string): boolean {
  * reader.
  */
 export function safeActivationNext(raw: string | null | undefined): string | null {
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return null;
-  const pathname = raw.split(/[?#]/, 1)[0] ?? raw;
-  if (pathname.includes('..')) return null;
-  if (!isActivationPath(pathname) || isActivationPublicPage(pathname)) return null;
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return null;
+  // Backslashes and control characters are rewritten or dropped by a URL
+  // parser, so what is checked below would not be what the browser follows.
+  if (/[\\\u0000-\u001f\u007f]/.test(raw)) return null;
+
+  const written = raw.split(/[?#]/, 1)[0] ?? raw;
+  if (written.includes('..') || /%2e|%2f|%5c/i.test(written)) return null;
+
+  // Resolve it the way the browser will, and judge the result: `%2e%2e` is a
+  // dot segment to a URL parser, so a literal check alone can be walked past.
+  // A path the parser would change in any way is refused rather than repaired.
+  let resolved: URL;
+  try {
+    resolved = new URL(raw, NEXT_BASE);
+  } catch {
+    return null;
+  }
+  if (resolved.origin !== NEXT_BASE || resolved.pathname !== written) return null;
+
+  if (!isActivationPath(resolved.pathname) || isActivationPublicPage(resolved.pathname)) return null;
   return raw;
 }

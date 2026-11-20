@@ -55,6 +55,18 @@ if (!databaseName.endsWith('_test')) {
   throw new Error(`Refusing to run: database "${databaseName}" does not end in "_test". This script empties it.`);
 }
 
+// A local address does not prove a throwaway instance. Port 6379 is where a
+// developer's ordinary Redis lives, and this script FLUSHES the database it is
+// given; a `.env` beside the backend means that backend process may not be
+// running on the throwaway database at all (the shared one is
+// production-shaped). Both are refused rather than trusted.
+if (new URL(REDIS_URL).port === '' || new URL(REDIS_URL).port === '6379') {
+  throw new Error('Refusing to run: REDIS_URL uses the default Redis port. Use the dedicated throwaway instance (see backend-env.sh).');
+}
+if (fs.existsSync(path.join(path.resolve(BACKEND_DIR), '.env')) || fs.existsSync(path.join(path.resolve(BACKEND_DIR), '.env.local'))) {
+  throw new Error(`Refusing to run: ${BACKEND_DIR} contains a .env file, so its backend may not be using the throwaway database. Use a checkout without one.`);
+}
+
 const backendRequire = createRequire(path.join(path.resolve(BACKEND_DIR), 'package.json'));
 const { PrismaClient } = backendRequire('@prisma/client');
 const argon2 = backendRequire('argon2');
