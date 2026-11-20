@@ -2,6 +2,7 @@
 
 import * as React from 'react';
 
+import { isActivationPath } from '@/activation/lib/routes';
 import { translate, type Language } from '@/i18n/dictionaries';
 import { ApiError, api } from '@/lib/api-client';
 import { endSessionIfNeeded } from '@/lib/session-end';
@@ -78,6 +79,10 @@ export function SessionProvider({
   }, [initialUser]);
 
   React.useEffect(() => {
+    // Not on the activation portal: it has its own session (its own cookies,
+    // its own `auth/me` through its own proxy). Asking this site's proxy who
+    // is signed in there would be a request about the wrong session.
+    if (isActivationPath(window.location.pathname)) return;
     void refresh();
     // Once per page load — the mobile app's bootstrap `me()`.
     // eslint-disable-next-line react-hooks/exhaustive-deps

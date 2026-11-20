@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { activationDictionaries } from '../activation/i18n.ts';
 import { dictionaries } from './dictionaries.ts';
 
 function sources(dir: string, out: string[] = []): string[] {
@@ -28,7 +29,12 @@ describe('translation dictionary', () => {
         if (key) used.add(key);
       }
     }
-    const missing = [...used].filter((k) => !(k in dictionaries.en)).sort();
+    // The activation portal keeps its own words in its own dictionary
+    // (`activation/i18n.ts`) and falls back to this one, so a key is defined
+    // if either has it. The same rule holds for the portal: a key it asks for
+    // that neither dictionary has would render its own name on screen.
+    const defined = (k: string) => k in dictionaries.en || k in activationDictionaries.en;
+    const missing = [...used].filter((k) => !defined(k)).sort();
     assert.deepEqual(missing, [], `keys used in the UI but absent from the dictionary: ${missing.join(', ')}`);
   });
 

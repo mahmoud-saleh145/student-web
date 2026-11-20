@@ -32,6 +32,10 @@ Checks: `npm run typecheck`, `npm run lint`, `npm run verify` (typecheck + lint 
 
 Auth: `/login`, `/register` (3-step wizard), `/password-help` · Tabs: `/home`, `/courses`, `/my-courses`, `/search`, `/notifications`, `/profile` · Detail: `/courses/[id]` (overview/content/materials + join sheet with enroll + access-code redeem + code validation), `/lessons/[id]` (completion rule, manual complete, attachments, prev/next), `/player/[videoId]` (ticket → hls.js HLS, heartbeat, progress save, ticket release, watermark overlay, allowance warning, autoplay), `/viewer/[attachmentId]` (ticketed PDF/image viewer with watermark) · Library: `/library`, `/library/[id]` (quote → purchase sheet), `/library/reader/[id]` · `/wallet` (balance, recharge-card redeem, transactions) · Support: `/support`, `/support/new`, `/support/[id]` · Settings: `/settings`, `/language`, `/playback`, `/notifications` (server preferences), `/security`, `/devices`, `/about`, `/delete-account` (via support ticket) · `/profile/edit` (name + avatar via presigned storage upload).
 
+## Activation portal (`/activate`)
+
+A separate, activation-only route tree in this same app: browse courses and the library, redeem access codes, top up credit, buy library materials — with no player, no reader, its own session (no device binding) and an allow-listed proxy. See [`docs/ACTIVATION_PORTAL.md`](docs/ACTIVATION_PORTAL.md).
+
 ## Deliberate web adaptations (vs mobile)
 
 - Push notifications: not available on web — notification preferences for in-app content remain; no push-token registration.
