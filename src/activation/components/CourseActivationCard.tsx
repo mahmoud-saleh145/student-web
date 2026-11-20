@@ -8,7 +8,7 @@ import { Badge, Button, Card } from '@/components/ui/core';
 import { CheckCircleIcon, KeyIcon, ShieldIcon } from '@/components/ui/icons';
 import { ApiError } from '@/lib/api-client';
 import { joinSheetActions } from '@/lib/course-access';
-import { formatDate, formatMoney, formatNumber, localizedName } from '@/lib/format';
+import { formatDate, formatMoney, formatNumber } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { CodeValidation, CourseDetail, CourseJoinOptions, CoursePartsResponse } from '@/types/domain';
 
@@ -27,14 +27,12 @@ import {
   courseOwnership,
   ownershipKnownFor,
   type OwnershipSnapshot,
-  redeemPrecheck,
-  type RedeemPrecheck,
   unlockSummary,
   type UnlockSummary,
 } from '../lib/ownership';
 import { activationRoutes } from '../lib/routes';
 import { useActivationSession } from '../session';
-import { activationErrorMessage, useActivationT, type ActivationT } from '../use-t';
+import { activationErrorMessage, useActivationT } from '../use-t';
 
 /**
  * A course's activation panel: what the student holds, and the code box.
@@ -47,13 +45,15 @@ import { activationErrorMessage, useActivationT, type ActivationT } from '../use
  * part-only owner is told they own parts — not the course — and can add more.
  *
  * WHAT IT DOES is hand the code to the backend, which alone decides what the
- * card is and what it unlocks. Two things are added around that call, because
- * the backend's redeem response does not say what was unlocked and a part or
- * section card for something already held is consumed for nothing:
+ * card is, what it unlocks, and whether it is worth redeeming at all: a part
+ * or section card for something already held is refused there and left
+ * unspent. The panel asks the student nothing in between. Two read-only steps
+ * sit around the call, because the redeem response does not say what was
+ * unlocked:
  *
- *   1. BEFORE: `/codes/validate` (read-only, does not use the card) names the
- *      card's kind. If the student already holds something the card might
- *      duplicate, the panel stops, or asks, before the card is spent.
+ *   1. BEFORE: `/codes/validate` names the card's kind (and gives an invalid,
+ *      expired or used card its own message), and ownership is read as it
+ *      stands — the "before" for the receipt.
  *   2. AFTER: ownership is read again and compared with what it was, so the
  *      success screen lists exactly what became owned — or says plainly that
  *      nothing changed.
@@ -63,13 +63,6 @@ import { activationErrorMessage, useActivationT, type ActivationT } from '../use
  */
 
 type Phase = 'idle' | 'checking' | 'activating';
-
-interface PendingConfirm {
-  code: string;
-  validation: CodeValidation;
-  before: OwnershipSnapshot;
-  precheck: Extract<RedeemPrecheck, { action: 'confirm' }>;
-}
 
 function Notice({
   tone,
@@ -102,19 +95,6 @@ function Notice({
   );
 }
 
-function cardLabel(validation: CodeValidation, t: ActivationT): string {
-  switch (validation.targetType) {
-    case 'PART':
-      return t('act.code.card.PART');
-    case 'SECTION':
-      return t('act.code.card.SECTION', { name: validation.section?.title ?? '' });
-    case 'TEACHER':
-      return t('act.code.card.TEACHER', { name: validation.teacher?.fullName ?? '' });
-    default:
-      return t('act.code.card.COURSE');
-  }
-}
-
 export function CourseActivationCard({
   course,
   parts,
@@ -139,7 +119,6 @@ export function CourseActivationCard({
   const [code, setCode] = React.useState('');
   const [phase, setPhase] = React.useState<Phase>('idle');
   const [message, setMessage] = React.useState<{ text: string; goTo: 'wallet' | 'courses' | null } | null>(null);
-  const [confirm, setConfirm] = React.useState<PendingConfirm | null>(null);
   /** A second press while a request is in flight must not send a second one. */
   const busy = React.useRef(false);
 
@@ -171,7 +150,13 @@ export function CourseActivationCard({
     router.push(activationRoutes.success);
   };
 
-  const doRedeem = async (cardCode: string, before: OwnershipSnapshot, validation: CodeValidation) => {
+  const doRedeem = async (
+    cardCode: string,
+    before: OwnershipSnapshot,
+    /** False when `before` could not be loaded in full: nothing may be itemised from it. */
+    beforeKnown: boolean,
+    validation: CodeValidation,
+  ) => {
     setPhase('activating');
     try {
       await redeem.mutateAsync(cardCode);
@@ -187,16 +172,18 @@ export function CourseActivationCard({
       // No answer, or a gateway that gave up: the redemption may have been
       // committed. Ask the server what the student holds now before saying
       // anything — "it failed, try again" could cost them a card that worked.
-      try {
-        const fresh = await refreshOwnership();
-        const summary = unlockSummary(before, buildSnapshot(fresh));
-        if (!summary.nothingNew) {
-          setCode('');
-          finish('unlocked', summary, validation);
-          return;
+      if (beforeKnown) {
+        try {
+          const fresh = await refreshOwnership();
+          const summary = unlockSummary(before, buildSnapshot(fresh));
+          if (!summary.nothingNew) {
+            setCode('');
+            finish('unlocked', summary, validation);
+            return;
+          }
+        } catch {
+          // Still no answer: say exactly that, below.
         }
-      } catch {
-        // Still no answer: say exactly that, below.
       }
       setMessage({ text: t('act.err.unknownOutcome'), goTo: null });
       return;
@@ -207,6 +194,11 @@ export function CourseActivationCard({
     setCode('');
     try {
       const fresh = await refreshOwnership();
+      if (!beforeKnown) {
+        // Activated, but there is no trustworthy "before" to itemise against.
+        finish('unverified', null, validation);
+        return;
+      }
       const summary = unlockSummary(before, buildSnapshot(fresh));
       finish(summary.nothingNew ? 'nothing-new' : 'unlocked', summary, validation);
     } catch {
@@ -227,50 +219,19 @@ export function CourseActivationCard({
 
     busy.current = true;
     setMessage(null);
-    setConfirm(null);
     setPhase('checking');
     try {
-      // Read-only: names the card's kind without using it.
+      // Read-only: names the card's kind, and refuses an invalid, expired or
+      // used card with its own message before anything is attempted.
       const validation = await validate.mutateAsync(cardCode);
-      // Ownership as the server sees it right now, not as this page last saw it.
+      // Ownership as the server sees it right now, not as this page last saw
+      // it — the "before" the receipt is measured against.
       const current = await refreshOwnership();
-      if (!ownershipKnownFor(validation.targetType, current)) {
-        // Nothing has been spent. Better to stop than to check a part card
-        // against a list of owned parts that could not be loaded.
-        setMessage({ text: t('act.err.cannotCheck'), goTo: null });
-        return;
-      }
-      const before = buildSnapshot(current);
-      const precheck = redeemPrecheck({ targetType: validation.targetType, sectionId: validation.section?.id }, before);
-
-      if (precheck.action === 'block') {
-        setMessage({
-          text: t(precheck.reason === 'all-parts-owned' ? 'act.code.blockAllParts' : 'act.code.blockWhole'),
-          goTo: null,
-        });
-        return;
-      }
-      if (precheck.action === 'confirm') {
-        setConfirm({ code: cardCode, validation, before, precheck });
-        return;
-      }
-      await doRedeem(cardCode, before, validation);
+      // Whether the card is worth redeeming is the backend's decision: it
+      // refuses, without spending it, a card that would unlock nothing new.
+      await doRedeem(cardCode, buildSnapshot(current), ownershipKnownFor(validation.targetType, current), validation);
     } catch (e) {
       fail(e);
-    } finally {
-      busy.current = false;
-      setPhase('idle');
-    }
-  };
-
-  const confirmUse = async () => {
-    if (!confirm || busy.current) return;
-    busy.current = true;
-    const pending = confirm;
-    setConfirm(null);
-    setMessage(null);
-    try {
-      await doRedeem(pending.code, pending.before, pending.validation);
     } finally {
       busy.current = false;
       setPhase('idle');
@@ -378,7 +339,6 @@ export function CourseActivationCard({
                   onChange={(e) => {
                     setCode(e.target.value.toUpperCase());
                     if (message) setMessage(null);
-                    if (confirm) setConfirm(null);
                   }}
                   placeholder={t('access.codePlaceholder')}
                   disabled={working}
@@ -395,33 +355,9 @@ export function CourseActivationCard({
                 />
               </label>
 
-              {confirm ? (
-                <div className="mt-3 rounded-lg border border-warning/40 bg-warning/10 p-3 text-[13px]" role="alertdialog" data-testid="code-confirm">
-                  <strong>{t('act.code.confirmTitle')}</strong>
-                  <p className="mt-1 font-semibold">{cardLabel(confirm.validation, t)}</p>
-                  <p className="mt-1 text-muted">
-                    {confirm.precheck.reason === 'part-may-be-owned'
-                      ? t('act.code.confirmPart', {
-                          parts: confirm.precheck.ownedParts
-                            .map((p) => localizedName({ name: p.title, nameAr: p.titleAr }, language))
-                            .join(language === 'ar' ? '، ' : ', '),
-                        })
-                      : t('act.code.confirmSection', { name: confirm.precheck.section.title })}
-                  </p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button type="button" size="sm" variant="secondary" onClick={() => setConfirm(null)} data-testid="code-keep">
-                      {t('act.code.keepCard')}
-                    </Button>
-                    <Button type="button" size="sm" onClick={() => void confirmUse()} data-testid="code-use-anyway">
-                      {t('act.code.useAnyway')}
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <Button type="submit" fullWidth size="lg" className="mt-3" loading={working} data-testid="code-submit">
-                  {phase === 'checking' ? t('act.code.checking') : phase === 'activating' ? t('act.code.activating') : t('act.code.submit')}
-                </Button>
-              )}
+              <Button type="submit" fullWidth size="lg" className="mt-3" loading={working} data-testid="code-submit">
+                {phase === 'checking' ? t('act.code.checking') : phase === 'activating' ? t('act.code.activating') : t('act.code.submit')}
+              </Button>
             </form>
           ) : !hasLiveAccess && !actions.free && !actions.approval ? (
             <p className="mt-4 rounded-lg border border-border p-3 text-[13px] text-muted">{t('access.noMethods')}</p>

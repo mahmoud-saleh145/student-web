@@ -5,7 +5,6 @@ import {
   canEnterCode,
   courseOwnership,
   ownershipKnownFor,
-  redeemPrecheck,
   unlockSummary,
   type OwnershipSnapshot,
   type PartLike,
@@ -79,57 +78,6 @@ describe('canEnterCode', () => {
     assert.equal(canEnterCode(snapshot({ accessState: 'ACTIVE', fullCourseOwned: true })), false);
     assert.equal(canEnterCode(snapshot({ accessState: 'REVOKED' })), false);
     assert.equal(canEnterCode(snapshot({ accessState: 'ARCHIVED' })), false);
-  });
-});
-
-describe('redeemPrecheck — a card must not be used up for nothing', () => {
-  const partial = snapshot({
-    accessState: 'ACTIVE',
-    parts: [part('a', true), part('b', false)],
-    sections: [section('s1', false), section('s2', true)],
-  });
-
-  it('lets a first-time student redeem any card', () => {
-    for (const targetType of ['COURSE', 'PART', 'SECTION', 'TEACHER'] as const) {
-      assert.deepEqual(redeemPrecheck({ targetType, sectionId: 's1' }, snapshot({ parts: [part('a', false)], sections: [section('s1', true)] })), {
-        action: 'proceed',
-      });
-    }
-  });
-
-  it('lets a part owner upgrade with a whole-course or teacher card', () => {
-    assert.deepEqual(redeemPrecheck({ targetType: 'COURSE' }, partial), { action: 'proceed' });
-    assert.deepEqual(redeemPrecheck({ targetType: 'TEACHER' }, partial), { action: 'proceed' });
-  });
-
-  it('asks before a part card when the student already owns a part', () => {
-    const result = redeemPrecheck({ targetType: 'PART' }, partial);
-    assert.equal(result.action, 'confirm');
-    assert.equal(result.action === 'confirm' && result.reason, 'part-may-be-owned');
-    assert.deepEqual(result.action === 'confirm' && result.reason === 'part-may-be-owned' && result.ownedParts.map((p) => p.id), ['a']);
-  });
-
-  it('stops a part card when every part is already owned', () => {
-    assert.deepEqual(
-      redeemPrecheck({ targetType: 'PART' }, snapshot({ accessState: 'ACTIVE', parts: [part('a', true), part('b', true)] })),
-      { action: 'block', reason: 'all-parts-owned' },
-    );
-  });
-
-  it('asks before a section card for a section that is already open', () => {
-    const result = redeemPrecheck({ targetType: 'SECTION', sectionId: 's1' }, partial);
-    assert.equal(result.action, 'confirm');
-    assert.equal(result.action === 'confirm' && result.reason, 'section-already-open');
-    assert.deepEqual(redeemPrecheck({ targetType: 'SECTION', sectionId: 's2' }, partial), { action: 'proceed' });
-  });
-
-  it('stops every card for a whole-course owner', () => {
-    for (const targetType of ['COURSE', 'PART', 'SECTION', 'TEACHER'] as const) {
-      assert.deepEqual(redeemPrecheck({ targetType }, snapshot({ accessState: 'ACTIVE', fullCourseOwned: true })), {
-        action: 'block',
-        reason: 'whole-course-owned',
-      });
-    }
   });
 });
 

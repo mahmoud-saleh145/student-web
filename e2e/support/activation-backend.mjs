@@ -16,8 +16,8 @@
 //   * sign-in binds a device only when `X-Device-Id` is present
 //   * course visibility is the student's university + faculty + department
 //   * a card's scope comes from the card, never from the request
-//   * a PART / SECTION card for something already held is consumed and grants
-//     nothing; a whole-course owner is refused with ALREADY_ENROLLED first
+//   * a PART / SECTION card for something already held is refused with
+//     ALREADY_ENROLLED and left unspent, as a whole-course owner's card is
 //   * redeem answers `{ state, courseId }` and does not say what it unlocked
 //   * library items are bought with wallet credit only; recharge is by card
 //
@@ -572,6 +572,19 @@ async function route(req, url, body) {
     }
     if (code.redemptionCount >= code.maxRedemptions || code.redeemedBy.includes(user.id)) fail(409, 'CODE_ALREADY_USED', 'Code already used');
 
+    // The real backend asks, inside the redemption transaction and before the
+    // card is consumed, whether it would change anything for this student. A
+    // part already owned, or a section already open, is refused and the card
+    // is left exactly as it was. (Lifetime access only here, so the backend's
+    // renewal exception never applies.)
+    if (existing?.state === 'ACTIVE') {
+      const section = course.sections.find((s) => s.id === code.sectionId);
+      const nothingNew =
+        (code.targetType === 'PART' && ownsPart(user.id, code.partId)) ||
+        (code.targetType === 'SECTION' && section !== undefined && sectionOpen(user, course, section));
+      if (nothingNew) fail(409, 'ALREADY_ENROLLED', 'You already have access to everything this code unlocks. The code was not used.');
+    }
+
     // One transaction on the real backend: the card is spent and the
     // entitlement written together. Spent synchronously here, before any
     // await, so two requests racing for one card cannot both win.
@@ -593,7 +606,6 @@ async function route(req, url, body) {
     else if (code.targetType === 'SECTION') grant(course.id, { sectionIds: [code.sectionId] });
     else if (code.targetType === 'PART') {
       grant(course.id, {});
-      // Already held: the card is spent above and nothing is written.
       state.partOwned[`${user.id}:${code.partId}`] ??= now();
     }
 

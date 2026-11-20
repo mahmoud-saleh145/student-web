@@ -270,11 +270,8 @@ test.describe('parts and sections', () => {
     await page.goto(`/activate/courses/${mechanics.id}`);
     await enterCourseCode(part1CardB);
 
-    // The portal asks first; the student insists.
-    const confirm = page.getByTestId('code-confirm');
-    await expect(confirm).toContainText('Check before you use this card');
-    await page.getByTestId('code-use-anyway').click();
-
+    // No prompt: the card goes to the backend, and the backend refuses it.
+    await expect(page.getByTestId('code-confirm')).toHaveCount(0);
     await expect(page.getByTestId('activation-error')).toContainText('You already have everything this card unlocks');
     await expect(page.getByTestId('activation-error')).toContainText('was not used');
     await expect(page).toHaveURL(new RegExp(`/activate/courses/${mechanics.id}$`));
@@ -294,9 +291,6 @@ test.describe('parts and sections', () => {
   test('a card for a section inside the owned part is refused and stays unspent', async () => {
     await page.goto(`/activate/courses/${mechanics.id}`);
     await enterCourseCode(fx.codes.sectionStatics);
-    await expect(page.getByTestId('code-confirm')).toContainText(statics.title);
-    await page.getByTestId('code-use-anyway').click();
-
     await expect(page.getByTestId('activation-error')).toContainText('You already have everything this card unlocks');
     expect(await card(fx.codes.sectionStatics)).toEqual({ status: 'ACTIVE', redemptionCount: 0 });
   });
@@ -322,7 +316,6 @@ test.describe('parts and sections', () => {
   test('the other part’s card unlocks the other part: 2 of 2 parts, still not "the full course"', async () => {
     await page.goto(`/activate/courses/${mechanics.id}`);
     await enterCourseCode(fx.codes.part2);
-    await page.getByTestId('code-use-anyway').click();
 
     await expect(page).toHaveURL(/\/activate\/success$/);
     await expect(page.getByTestId('success-items').locator('li')).toHaveText([fx.parts.part2.title]);
