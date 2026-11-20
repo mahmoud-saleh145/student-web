@@ -90,18 +90,6 @@ const en = {
   'act.code.activating': 'Activating…',
   'act.code.required': 'Enter the code from your card.',
   'act.code.format': 'A code has letters, numbers and dashes only.',
-  'act.code.card.COURSE': 'Full course card',
-  'act.code.card.PART': 'Card for one part of this course',
-  'act.code.card.SECTION': 'Card for the section “{name}”',
-  'act.code.card.TEACHER': 'Teacher card — {name}',
-  'act.code.confirmTitle': 'Check before you use this card',
-  'act.code.confirmPart':
-    'This card unlocks one part of this course. You already own: {parts}. If the card is for a part you already own, it will be used up without unlocking anything new.',
-  'act.code.confirmSection': 'You already have access to “{name}”. This card may be used up without unlocking anything new.',
-  'act.code.useAnyway': 'Use the card',
-  'act.code.keepCard': 'Keep the card',
-  'act.code.blockAllParts': 'You already own every part of this course. This card would be used up without unlocking anything new, so it was not used.',
-  'act.code.blockWhole': 'You already own this full course. Your card was not used.',
   'act.code.otherWays': 'Other ways to join',
   'act.code.joinFree': 'Join for free',
   'act.code.requestApproval': 'Request access',
@@ -114,7 +102,6 @@ const en = {
   'act.err.partUnavailable': 'The part this card is for is not available right now. Your card was not used.',
   'act.err.alreadyOwned': 'You already have everything this card unlocks. Your card was not used.',
   'act.err.rateLimited': 'Too many attempts. Wait a few minutes, then try again.',
-  'act.err.cannotCheck': 'We could not check what you already own, so your card was not used. Try again in a moment.',
   'act.err.unknownOutcome':
     'We could not confirm whether your card was used. Check “My activations” before entering it again.',
   'act.err.unknownOutcomeWallet':
@@ -128,9 +115,9 @@ const en = {
   'act.success.partsIntro': 'Unlocked in “{course}”:',
   'act.success.sectionsIntro': 'Sections unlocked in “{course}”:',
   'act.success.teacherNote': 'This card may also cover other courses by {name}. See My activations.',
-  'act.success.nothingNewTitle': 'Nothing new was unlocked',
+  'act.success.nothingNewTitle': 'Your code was accepted',
   'act.success.nothingNewBody':
-    'The code was accepted, but your access to “{course}” did not change — you already had what it covers. If you think this is a mistake, contact the administration with your card.',
+    'What you can open in “{course}” is the same as before. If this card renews or extends your access, the new end date is now on your account. If you expected something else, contact the administration with your card.',
   'act.success.joined': 'You joined “{course}”.',
   'act.success.pendingTitle': 'Request sent',
   'act.success.pendingBody': 'Your request to join “{course}” was sent. You will get access when the administration approves it.',
@@ -153,7 +140,12 @@ const en = {
   'act.app.title': 'Continue in the app',
   'act.app.body': 'Open the Student Center app on your phone. What you activated is already on your account.',
   'act.app.refresh': 'If you do not see it right away, pull down to refresh in My courses or the Library.',
-  'act.app.notOpened': 'The app did not open? Open Student Center from your phone’s home screen.',
+  'act.app.notOpened':
+    'The app did not open? Open Student Center from your phone’s home screen. What you activated is already on your account.',
+  'act.app.manual':
+    'Open Student Center from your phone’s home screen. What you activated is already on your account.',
+  'act.app.onPhone':
+    'Student Center is a phone app. Open it on your phone — what you activated is already on your account.',
   'act.app.getApp': 'Get the app',
 
   'act.library.subtitle': 'Browse the library and buy with credit. Documents are read in the Student Center app.',
@@ -279,18 +271,6 @@ const ar: Record<ActivationKey, string> = {
   'act.code.activating': 'جارٍ التفعيل…',
   'act.code.required': 'أدخل الكود الموجود على الكرت.',
   'act.code.format': 'الكود يتكوّن من حروف وأرقام وشرطات فقط.',
-  'act.code.card.COURSE': 'كرت للكورس كاملًا',
-  'act.code.card.PART': 'كرت لجزء واحد من هذا الكورس',
-  'act.code.card.SECTION': 'كرت للقسم «{name}»',
-  'act.code.card.TEACHER': 'كرت محاضر — {name}',
-  'act.code.confirmTitle': 'تأكد قبل استخدام هذا الكرت',
-  'act.code.confirmPart':
-    'هذا الكرت يفتح جزءًا واحدًا من هذا الكورس. أنت تمتلك بالفعل: {parts}. إذا كان الكرت لجزء تمتلكه، فسيُستهلك دون أن يفتح شيئًا جديدًا.',
-  'act.code.confirmSection': 'لديك وصول بالفعل إلى «{name}». قد يُستهلك هذا الكرت دون أن يفتح شيئًا جديدًا.',
-  'act.code.useAnyway': 'استخدم الكرت',
-  'act.code.keepCard': 'احتفظ بالكرت',
-  'act.code.blockAllParts': 'أنت تمتلك بالفعل كل أجزاء هذا الكورس. هذا الكرت كان سيُستهلك دون أن يفتح شيئًا جديدًا، لذلك لم يُستخدم.',
-  'act.code.blockWhole': 'أنت تمتلك هذا الكورس كاملًا بالفعل. لم يُستخدم الكرت.',
   'act.code.otherWays': 'طرق أخرى للانضمام',
   'act.code.joinFree': 'انضم مجانًا',
   'act.code.requestApproval': 'اطلب الوصول',
@@ -303,7 +283,6 @@ const ar: Record<ActivationKey, string> = {
   'act.err.partUnavailable': 'الجزء الخاص بهذا الكرت غير متاح حاليًا. لم يُستخدم الكرت.',
   'act.err.alreadyOwned': 'لديك بالفعل كل ما يفتحه هذا الكرت. لم يُستخدم الكرت.',
   'act.err.rateLimited': 'محاولات كثيرة. انتظر بضع دقائق ثم حاول مجددًا.',
-  'act.err.cannotCheck': 'تعذّر التحقق مما تمتلكه بالفعل، لذلك لم يُستخدم الكرت. حاول مرة أخرى بعد قليل.',
   'act.err.unknownOutcome': 'تعذّر التأكد مما إذا كان الكرت قد استُخدم. راجع «تفعيلاتي» قبل إدخاله مرة أخرى.',
   'act.err.unknownOutcomeWallet':
     'تعذّر التأكد مما إذا كان الكرت قد استُخدم. راجع رصيدك والسجل بالأسفل قبل إدخاله مرة أخرى.',
@@ -316,9 +295,9 @@ const ar: Record<ActivationKey, string> = {
   'act.success.partsIntro': 'تم فتحه في «{course}»:',
   'act.success.sectionsIntro': 'الأقسام التي فُتحت في «{course}»:',
   'act.success.teacherNote': 'قد يشمل هذا الكرت كورسات أخرى للمحاضر {name}. راجع تفعيلاتي.',
-  'act.success.nothingNewTitle': 'لم يُفتح شيء جديد',
+  'act.success.nothingNewTitle': 'تم قبول الكود',
   'act.success.nothingNewBody':
-    'تم قبول الكود، لكن وصولك إلى «{course}» لم يتغير — كان لديك بالفعل ما يشمله. إذا رأيت أن هذا خطأ، تواصل مع الإدارة ومعك الكرت.',
+    'ما يمكنك فتحه في «{course}» لم يتغيّر. إذا كان هذا الكرت يجدّد أو يمدّ مدة وصولك، فقد سُجّل الموعد الجديد على حسابك. إذا كنت تتوقع شيئًا آخر، تواصل مع الإدارة ومعك الكرت.',
   'act.success.joined': 'انضممت إلى «{course}».',
   'act.success.pendingTitle': 'تم إرسال الطلب',
   'act.success.pendingBody': 'تم إرسال طلب انضمامك إلى «{course}». ستحصل على الوصول عند موافقة الإدارة.',
@@ -341,7 +320,9 @@ const ar: Record<ActivationKey, string> = {
   'act.app.title': 'أكمل من التطبيق',
   'act.app.body': 'افتح تطبيق Student Center على هاتفك. ما فعّلته موجود على حسابك بالفعل.',
   'act.app.refresh': 'إذا لم يظهر فورًا، اسحب الشاشة لأسفل للتحديث في كورساتي أو المكتبة.',
-  'act.app.notOpened': 'لم يُفتح التطبيق؟ افتح Student Center من الشاشة الرئيسية لهاتفك.',
+  'act.app.notOpened': 'لم يُفتح التطبيق؟ افتح Student Center من الشاشة الرئيسية لهاتفك. ما فعّلته موجود على حسابك بالفعل.',
+  'act.app.manual': 'افتح Student Center من الشاشة الرئيسية لهاتفك. ما فعّلته موجود على حسابك بالفعل.',
+  'act.app.onPhone': 'Student Center تطبيق للهاتف. افتحه على هاتفك — ما فعّلته موجود على حسابك بالفعل.',
   'act.app.getApp': 'حمّل التطبيق',
 
   'act.library.subtitle': 'تصفّح المكتبة واشترِ بالرصيد. المستندات تُقرأ من تطبيق Student Center.',

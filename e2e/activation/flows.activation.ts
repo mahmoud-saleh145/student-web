@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { devices, expect, test, type BrowserContextOptions, type Page } from '@playwright/test';
 
 import {
   GENERAL,
@@ -31,6 +31,18 @@ test.beforeEach(async ({ context, request }) => {
   await backendReset(request);
   await useEnglish(context);
 });
+
+/**
+ * A device descriptor as context options: its viewport, touch and user agent,
+ * without its browser engine. These tests run every descriptor on the same
+ * browser, so they show what the page does at that size and with that user
+ * agent — they are not a test of the phone.
+ */
+function asContextOptions(device: (typeof devices)[string]): BrowserContextOptions {
+  const options: Record<string, unknown> = { ...device };
+  delete options.defaultBrowserType;
+  return options as BrowserContextOptions;
+}
 
 const titles = (page: Page) => page.getByTestId('course-card').locator('h3').allTextContents();
 
@@ -229,34 +241,51 @@ test.describe('activating a course with a code', () => {
     await expect(sections.nth(2)).toContainText('Locked');
   });
 
-  test('a part owner is asked before a second part card is spent, and can keep it', async ({ page, request }) => {
+  test('a second card for a part already owned is refused by the backend and stays unspent — no prompt', async ({ page, request }) => {
     await backendGrant(request, { userId: GENERAL.id, courseId: 'c-mech', partIds: ['p1'] });
     await signIn(page, GENERAL.phone);
     await page.goto('/activate/courses/c-mech');
     await expect(page.getByTestId('ownership-notice')).toContainText('You own 1 of 2 parts');
 
-    // A second card for the part already owned: redeeming it would burn it.
+    // Straight to the backend: no "check before you use this card" step.
     await enterCourseCode(page, 'PART-MECH-P1B2');
-    const confirm = page.getByTestId('code-confirm');
-    await expect(confirm).toContainText('Check before you use this card');
-    await expect(confirm).toContainText('You already own: Before Midterm');
-
-    await page.getByTestId('code-keep').click();
-    await expect(confirm).toHaveCount(0);
+    const error = page.getByTestId('activation-error');
+    await expect(error).toContainText('You already have everything this card unlocks');
+    await expect(error).toContainText('Your card was not used');
+    await expect(page.getByText('Check before you use this card')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Use the card|Keep the card/ })).toHaveCount(0);
     await expect(page).toHaveURL(/\/activate\/courses\/c-mech$/);
 
     const state = await backendState(request);
-    expect(calls(state, 'POST', '/courses/c-mech/redeem')).toBe(0);
+    expect(calls(state, 'POST', '/courses/c-mech/redeem')).toBe(1);
     expect(state.codes['PART-MECH-P1B2']).toMatchObject({ status: 'ACTIVE', redemptionCount: 0 });
+    expect(state.partOwned).toEqual([`${GENERAL.id}:p1`]);
+    // Still on the form, still able to enter the right card.
+    await expect(page.getByTestId('code-input')).toBeVisible();
+    await expect(page.getByTestId('ownership-notice')).toContainText('You own 1 of 2 parts');
   });
 
-  test('a part owner who confirms unlocks the other part, and then holds 2 of 2 parts — still not "full"', async ({ page, request }) => {
+  test('a card for a section already open is refused by the backend and stays unspent', async ({ page, request }) => {
+    // Section s3 is inside part p2, which the student owns.
+    await backendGrant(request, { userId: GENERAL.id, courseId: 'c-mech', partIds: ['p2'] });
+    await signIn(page, GENERAL.phone);
+    await page.goto('/activate/courses/c-mech');
+
+    await enterCourseCode(page, 'SECT-MECH-S3A1');
+    await expect(page.getByTestId('activation-error')).toContainText('You already have everything this card unlocks');
+
+    const state = await backendState(request);
+    expect(calls(state, 'POST', '/courses/c-mech/redeem')).toBe(1);
+    expect(state.codes['SECT-MECH-S3A1']).toMatchObject({ status: 'ACTIVE', redemptionCount: 0 });
+  });
+
+  test('a part owner unlocks the other part in one step, and then holds 2 of 2 parts — still not "full"', async ({ page, request }) => {
     await backendGrant(request, { userId: GENERAL.id, courseId: 'c-mech', partIds: ['p1'] });
     await signIn(page, GENERAL.phone);
     await page.goto('/activate/courses/c-mech');
 
     await enterCourseCode(page, 'PART-MECH-P2A1');
-    await page.getByTestId('code-use-anyway').click();
+    // No prompt in between: the card goes to the backend, which accepts it.
     await expect(page).toHaveURL(/\/activate\/success$/);
     // Exactly the part that became owned, not the one held before.
     await expect(page.getByTestId('success-items').locator('li')).toHaveText(['After Midterm']);
@@ -467,15 +496,179 @@ test.describe('activating a course with a code', () => {
     await expect(page.getByText('No recent activation')).toBeVisible();
   });
 
-  test('Open Student Center explains how to return when no app link is configured', async ({ page }) => {
+  test('on a computer, Open Student Center says to open the app on the phone — and tries no link', async ({ page, context }) => {
+    const launches: string[] = [];
+    page.on('console', (message) => {
+      if (message.text().includes('eduplatform')) launches.push(message.text());
+    });
+    // The same two signals the phone tests rely on, so "none" means something.
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Page.enable');
+    cdp.on('Page.frameRequestedNavigation', (event) => {
+      if (event.url.startsWith('eduplatform')) launches.push(event.url);
+    });
+
     await signIn(page, GENERAL.phone);
     await page.goto('/activate/courses/c-mech');
     await enterCourseCode(page, 'FULL-MECH-0001');
     await expect(page.getByTestId('open-app')).toBeVisible();
     await page.getByTestId('open-app').click();
-    await expect(page.getByTestId('open-app-help')).toContainText('Open Student Center from your phone');
-    // It did not navigate anywhere, and offers no unverified link.
+
+    const help = page.getByTestId('open-app-help');
+    await expect(help).toHaveAttribute('data-help', 'on-phone');
+    await expect(help).toContainText('Open it on your phone');
+    // The page did not go anywhere, and no app link was attempted.
     await expect(page).toHaveURL(/\/activate\/success$/);
+    expect(launches).toEqual([]);
+  });
+
+  for (const [name, device] of [
+    ['an Android phone profile (Pixel 7)', devices['Pixel 7']],
+    ['an iPhone profile (iPhone 14)', devices['iPhone 14']],
+  ] as const) {
+    test(`with ${name}, a tap on Open Student Center invokes eduplatform:// and falls back when nothing answers`, async ({ browser }) => {
+      // The device's viewport, touch and user agent — on this machine's
+      // browser. It shows what the page does; it is not a phone.
+      const context = await browser.newContext(asContextOptions(device));
+      await context.addInitScript(() => {
+        localStorage.setItem('edu-web-language', JSON.stringify({ state: { language: 'en' }, version: 0 }));
+      });
+      const page = await context.newPage();
+
+      // What the browser itself was asked to open. No app answers the scheme
+      // here, so the browser reports the attempt and stays on the page.
+      const launches: string[] = [];
+      page.on('console', (message) => {
+        if (message.text().includes('eduplatform')) launches.push(message.text());
+      });
+      const requested: string[] = [];
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Page.enable');
+      cdp.on('Page.frameRequestedNavigation', (event) => requested.push(event.url));
+
+      await signIn(page, GENERAL.phone);
+      await page.goto('/activate/courses/c-mech');
+      await enterCourseCode(page, 'FULL-MECH-0001');
+      await expect(page).toHaveURL(/\/activate\/success$/);
+      await expectNoHorizontalOverflow(page);
+
+      const button = page.getByTestId('open-app');
+      await expect(button).toBeVisible();
+      await expect(page.getByTestId('open-app-help')).toHaveCount(0);
+
+      // A real touch on the button, not a scripted navigation.
+      await button.tap();
+
+      // The bare scheme, and nothing appended to it.
+      await expect.poll(() => [...requested, ...launches].join(' | ')).toContain('eduplatform://');
+      for (const url of requested.filter((u) => u.startsWith('eduplatform'))) expect(url).toBe('eduplatform://');
+      for (const text of launches) expect(text).not.toMatch(/eduplatform:\/\/[^'" ]/);
+
+      // Nothing answered: after a moment the manual steps appear, and the
+      // portal is exactly where it was.
+      const help = page.getByTestId('open-app-help');
+      await expect(help).toHaveAttribute('data-help', 'not-opened');
+      await expect(help).toContainText('Open Student Center from your phone');
+      await expect(page).toHaveURL(/\/activate\/success$/);
+      await expectNoHorizontalOverflow(page);
+
+      // And it still works: on to another page of the portal.
+      await page.getByRole('link', { name: 'View my activations' }).click();
+      await expect(page).toHaveURL(/\/activate\/my-activations$/);
+      await expect(page.getByTestId('activation-course')).toHaveCount(1);
+      await context.close();
+    });
+  }
+
+  test('when the page goes to the background after the tap, the app took over: no fallback is shown', async ({ browser }) => {
+    const context = await browser.newContext(asContextOptions(devices['Pixel 7']));
+    await context.addInitScript(() => {
+      localStorage.setItem('edu-web-language', JSON.stringify({ state: { language: 'en' }, version: 0 }));
+    });
+    const page = await context.newPage();
+    await signIn(page, GENERAL.phone);
+    await page.goto('/activate/courses/c-mech');
+    await enterCourseCode(page, 'FULL-MECH-0001');
+    await expect(page).toHaveURL(/\/activate\/success$/);
+
+    await page.getByTestId('open-app').tap();
+    // What a phone does when the app opens: this page is no longer in front.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    // Well past the wait: the steps never appear.
+    await page.waitForTimeout(3500);
+    await expect(page.getByTestId('open-app-help')).toHaveCount(0);
+
+    // Back in the browser later, the page is as it was left.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect(page.getByTestId('open-app-help')).toHaveCount(0);
+    await expect(page.getByTestId('success-page')).toHaveAttribute('data-outcome', 'whole-course');
+    await context.close();
+  });
+
+  test('inside another app’s embedded browser, no link is attempted and the steps are shown', async ({ browser }) => {
+    const pixel = asContextOptions(devices['Pixel 7']);
+    const context = await browser.newContext({
+      ...pixel,
+      // How an Android WebView identifies itself.
+      userAgent: String(pixel.userAgent).replace('Pixel 7)', 'Pixel 7 Build/UQ1A; wv)'),
+    });
+    await context.addInitScript(() => {
+      localStorage.setItem('edu-web-language', JSON.stringify({ state: { language: 'en' }, version: 0 }));
+    });
+    const page = await context.newPage();
+    const launches: string[] = [];
+    page.on('console', (message) => {
+      if (message.text().includes('eduplatform')) launches.push(message.text());
+    });
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Page.enable');
+    cdp.on('Page.frameRequestedNavigation', (event) => {
+      if (event.url.startsWith('eduplatform')) launches.push(event.url);
+    });
+
+    await signIn(page, GENERAL.phone);
+    await page.goto('/activate/courses/c-mech');
+    await enterCourseCode(page, 'FULL-MECH-0001');
+    await expect(page).toHaveURL(/\/activate\/success$/);
+    expect(await page.evaluate(() => navigator.userAgent)).toContain('; wv)');
+
+    await page.getByTestId('open-app').tap();
+    const help = page.getByTestId('open-app-help');
+    await expect(help).toHaveAttribute('data-help', 'manual');
+    await expect(help).toContainText('Open Student Center from your phone');
+    await expect(page).toHaveURL(/\/activate\/success$/);
+    expect(launches).toEqual([]);
+    await context.close();
+  });
+
+  test('a card is still redeemed when the owned parts could not be loaded — with a plain receipt, not a guess', async ({ page, request }) => {
+    await backendGrant(request, { userId: GENERAL.id, courseId: 'c-mech', partIds: ['p1'] });
+    await signIn(page, GENERAL.phone);
+    await page.goto('/activate/courses/c-mech');
+    await expect(page.getByTestId('ownership-notice')).toContainText('You own 1 of 2 parts');
+
+    // From here on, both requests that say which parts are owned fail.
+    await page.route('**/api/activate/proxy/courses/c-mech/parts', (route) => route.fulfill({ status: 503, json: { code: 'UNAVAILABLE' } }));
+    await page.route('**/api/activate/proxy/courses/c-mech/join-options', (route) => route.fulfill({ status: 503, json: { code: 'UNAVAILABLE' } }));
+
+    await enterCourseCode(page, 'PART-MECH-P2A1');
+
+    // Redeemed, and told so — without a list that would have named Part 1 as new.
+    await expect(page).toHaveURL(/\/activate\/success$/);
+    await expect(page.getByTestId('success-page')).toHaveAttribute('data-outcome', 'unverified');
+    await expect(page.getByTestId('success-items')).toHaveCount(0);
+    await expect(page.getByTestId('success-body')).toContainText('My activations');
+    await expect(page.getByTestId('open-app')).toBeVisible();
+
+    const state = await backendState(request);
+    expect(state.codes['PART-MECH-P2A1']).toMatchObject({ status: 'EXHAUSTED', redemptionCount: 1 });
+    expect(state.partOwned.sort()).toEqual([`${GENERAL.id}:p1`, `${GENERAL.id}:p2`]);
   });
 });
 
@@ -742,10 +935,15 @@ test.describe('language, direction, theme and small screens', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   });
 
+  for (const [deviceName, viewport] of [
+    ['small Android phone', { viewport: { width: 360, height: 740 }, isMobile: true, hasTouch: true }],
+    ['Pixel 7', asContextOptions(devices['Pixel 7'])],
+    ['iPhone 14', asContextOptions(devices['iPhone 14'])],
+  ] as const)
   for (const language of ['en', 'ar'] as const) {
-    test(`fits a phone screen without sideways scrolling (${language})`, async ({ browser, request }) => {
+    test(`fits a ${deviceName} screen without sideways scrolling (${language})`, async ({ browser, request }) => {
       await backendGrant(request, { userId: GENERAL.id, courseId: 'c-mech', partIds: ['p1'], balance: 100 });
-      const context = await browser.newContext({ viewport: { width: 360, height: 740 }, isMobile: true, hasTouch: true });
+      const context = await browser.newContext(viewport);
       await context.addInitScript(
         ([lang]) => localStorage.setItem('edu-web-language', JSON.stringify({ state: { language: lang }, version: 0 })),
         [language],

@@ -6,20 +6,20 @@
  * `POST /courses/:id/redeem` resolves a card's scope from the card row and
  * writes the entitlement; these functions only COMPARE server answers
  * (`/courses/:id`, `/courses/:id/parts`, `/courses/:id/join-options`,
- * `/codes/validate`) so the portal can say truthfully what the student owns,
- * warn before a card would be wasted, and report what changed.
+ * `/codes/validate`) so the portal can say truthfully what the student owns
+ * and report what changed.
  *
- * Two backend facts shape this file (audited 2026-11-20):
+ * Two backend facts shape this file:
  *
  *   1. The redeem response is `{ state, courseId }`. It does not say what was
  *      unlocked. So the portal reads ownership before and after and reports
  *      the difference (`unlockSummary`).
  *
- *   2. A PART or SECTION card redeemed by a student who already holds that
- *      part or section is consumed and grants nothing. `/codes/validate` names
- *      the card's type (and, for a section card, the section) but not the
- *      part. So before redeeming for a student who already holds something,
- *      the portal checks what it can (`redeemPrecheck`) and stops or asks.
+ *   2. Whether a card is worth redeeming is decided by the backend, inside the
+ *      redemption itself: a PART or SECTION card for something the student
+ *      already holds is refused with ALREADY_ENROLLED and left unspent. The
+ *      portal therefore makes no judgement of its own before sending a card —
+ *      nothing here stops, delays or second-guesses a redemption.
  *
  * Pure and dependency-free so it runs under `node --test`.
  */
@@ -32,8 +32,6 @@ export type AccessStateLike =
   | 'EXPIRED'
   | 'REVOKED'
   | 'ARCHIVED';
-
-export type CodeTargetLike = 'COURSE' | 'PART' | 'SECTION' | 'TEACHER';
 
 export interface PartLike {
   id: string;
@@ -84,14 +82,18 @@ export function buildSnapshot(input: {
 }
 
 /**
- * Can the pre-redemption check be trusted for this kind of card?
+ * Is the "before" picture complete enough to say what a card unlocked?
  *
- * A part card is checked against the parts the student owns, and those come
- * from two requests that can each fail on their own. If BOTH failed, the
- * snapshot's `parts` is an empty list that means "unknown", not "none" — and a
- * check made against it would wave through exactly the duplicate it exists to
- * stop. Section, course and teacher cards are checked against the course
- * itself, which is always present.
+ * The receipt reports the difference between ownership before and after a
+ * redemption. For a part card that difference is taken over the parts the
+ * student owns, and those come from two requests that can each fail on their
+ * own. If BOTH failed, the snapshot's `parts` is an empty list that means
+ * "unknown", not "none" — and a difference taken against it would list parts
+ * the student already held as newly unlocked. The caller then redeems as
+ * usual (the backend decides what a card is worth, and refuses one that would
+ * unlock nothing) but gives the plain receipt instead of an itemised one.
+ * Section, course and teacher cards are measured against the course itself,
+ * which is always present.
  */
 export function ownershipKnownFor(
   targetType: string,
@@ -142,42 +144,6 @@ export function courseOwnership(snapshot: Pick<OwnershipSnapshot, 'accessState' 
 export function canEnterCode(snapshot: Pick<OwnershipSnapshot, 'accessState' | 'fullCourseOwned'>): boolean {
   if (snapshot.fullCourseOwned === true) return false;
   return snapshot.accessState !== 'REVOKED' && snapshot.accessState !== 'ARCHIVED';
-}
-
-// ---------------------------------------------------------------------------
-// Before redeeming: would this card be wasted?
-// ---------------------------------------------------------------------------
-
-export type RedeemPrecheck =
-  | { action: 'proceed' }
-  /** The card may be for something already held; the student decides. */
-  | { action: 'confirm'; reason: 'part-may-be-owned'; ownedParts: PartLike[] }
-  | { action: 'confirm'; reason: 'section-already-open'; section: SectionLike }
-  /** The card cannot add anything; redeeming it would only use it up. */
-  | { action: 'block'; reason: 'whole-course-owned' | 'all-parts-owned' };
-
-export function redeemPrecheck(
-  card: { targetType: CodeTargetLike; sectionId?: string | null },
-  snapshot: OwnershipSnapshot,
-): RedeemPrecheck {
-  if (snapshot.fullCourseOwned === true) return { action: 'block', reason: 'whole-course-owned' };
-
-  if (card.targetType === 'PART') {
-    const ownedParts = snapshot.parts.filter(isOwned);
-    if (snapshot.parts.length > 0 && ownedParts.length === snapshot.parts.length) {
-      return { action: 'block', reason: 'all-parts-owned' };
-    }
-    if (ownedParts.length > 0) return { action: 'confirm', reason: 'part-may-be-owned', ownedParts };
-    return { action: 'proceed' };
-  }
-
-  if (card.targetType === 'SECTION' && card.sectionId && snapshot.accessState === 'ACTIVE') {
-    const section = snapshot.sections.find((s) => s.id === card.sectionId);
-    if (section && !section.locked) return { action: 'confirm', reason: 'section-already-open', section };
-  }
-
-  // COURSE and TEACHER cards upgrade a partial holder to the whole course.
-  return { action: 'proceed' };
 }
 
 // ---------------------------------------------------------------------------

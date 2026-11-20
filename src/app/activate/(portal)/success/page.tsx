@@ -137,9 +137,13 @@ function describeCourse(r: CourseActivation, t: ActivationT, language: Language)
 
   switch (r.outcome) {
     case 'nothing-new':
+      // Accepted by the backend with nothing newly opened. Since the backend
+      // refuses a card that would change nothing, this is a renewal — the
+      // access period moved, which this screen does not itemise — so it is
+      // stated plainly, not as a warning.
       return {
         outcome: r.outcome,
-        tone: 'warning',
+        tone: 'neutral',
         title: t('act.success.nothingNewTitle'),
         body: t('act.success.nothingNewBody', { course }),
         items: [],

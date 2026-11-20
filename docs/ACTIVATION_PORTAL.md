@@ -126,17 +126,18 @@ receipt (`sessionStorage`, this tab only) is display text, never a code.
   (`POST /courses/:id/redeem`); the card's own scope decides what it unlocks.
 - The redeem response does not say what was unlocked, so the portal reads
   ownership before and after and reports the difference.
-- A part or section card for something already held grants nothing. A backend
-  with the duplicate-card fix (student-backend, branch
-  `fix/duplicate-scope-card-redeem`) refuses it inside the redemption
-  transaction with `409 ALREADY_ENROLLED` and leaves the card unspent; the
-  portal then says "You already have everything this card unlocks. Your card
-  was not used." A backend WITHOUT that fix consumes the card. So, before
-  redeeming, the portal still calls `/codes/validate` (read-only) and asks
-  first when the card might duplicate a part or section the student already
-  holds — that prompt is what protects the card until the backend fix is live,
-  and can be removed afterwards. A student who owns every part is offered no
-  code box at all — the same rule as the learning website's join sheet.
+- A part or section card for something already held grants nothing, and the
+  backend refuses it inside the redemption transaction with
+  `409 ALREADY_ENROLLED`, leaving the card unspent. The portal sends every card
+  straight to the backend and shows its answer — "You already have everything
+  this card unlocks. Your card was not used." There is no confirmation step in
+  between: whether a card is worth redeeming is the backend's decision alone.
+  (`/codes/validate` is still called first, read-only, so an invalid, expired
+  or used card is turned away with the backend's message before anything is
+  attempted.) A card the backend accepts without opening anything new is a
+  renewal of the access period, and the receipt says so plainly. A student
+  who owns every part is offered no code box at all — the same rule as the
+  learning website's join sheet.
 - "Full course" is shown only on the backend's `fullCourse.owned`. Owning every
   part one by one is shown as "2 of 2 parts".
 - Library materials are bought with wallet credit only. There are no library
@@ -148,31 +149,62 @@ receipt (`sessionStorage`, this tab only) is display text, never a code.
 
 ## Returning to the mobile app
 
-The mobile app today (audited 2026-11-20) declares a custom URL scheme only —
-`eduplatform` in production — with no universal links, no Android App Links,
-no inbound-URL handling and no recorded store listing. Nothing is hard-coded
-here. The "Open Student Center" button is driven by three optional build-time
-variables:
+"Open Student Center" opens the mobile app through its own URL scheme:
 
 ```
-NEXT_PUBLIC_ACTIVATION_APP_URL=          # e.g. eduplatform://  or an https app link
+eduplatform://
+```
+
+That is the scheme the production variant of the mobile app declares
+(`app.config.ts`, `SCHEME.production`, read 2026-11-20 and not modified). The
+link is the bare root — no path, no query string, no fragment — so no code,
+token or id can travel to the app. The app is opened with the session it
+already has; the portal's own session is separate and unaffected.
+
+How the button behaves:
+
+- **On a phone or tablet** the tap navigates to `eduplatform://` directly (a
+  browser only honours an app link that comes from a real gesture). If the page
+  goes to the background, the app took over. If it is still in front about
+  2.5 s later, the card shows the manual steps: open Student Center from the
+  home screen. The portal page is never replaced or broken.
+- **On a computer** no link is attempted (there is no app to open, and some
+  desktop browsers replace the page with an error for an unknown scheme). The
+  card says to open the app on the phone.
+- **Inside another app's embedded browser** (an Android WebView, or the in-app
+  browser of a chat or social app) no link is attempted either: those often
+  show an error page for a scheme they do not know. The card says to open
+  Student Center from the home screen.
+
+Known limits: a phone or tablet set to "desktop site" presents itself as a
+computer and gets the computer's message; an https replacement link, if one is
+ever configured, navigates this tab.
+
+Source and installed builds are not the same thing: that the configuration
+declares the scheme does not prove a given installed build answers it. The
+fallback exists so the button is safe either way, and the behaviour has to be
+confirmed on real phones.
+
+Optional build-time variables (none is needed for the button to work):
+
+```
+NEXT_PUBLIC_ACTIVATION_APP_URL=            # replaces eduplatform:// (e.g. an https app link); `off` disables the link
 NEXT_PUBLIC_ACTIVATION_ANDROID_STORE_URL=  # https://play.google.com/store/apps/details?id=…
 NEXT_PUBLIC_ACTIVATION_IOS_STORE_URL=      # https://apps.apple.com/…
 ```
 
-Unset (the default), the button explains how to return to the app by hand.
-With a link set, it opens the app and falls back to those instructions (and
-the store, if configured) when the page is still visible a moment later. The
-link may not carry a query string or fragment — no code, token or id travels
-to the app; the app reads entitlements from the backend.
+A replacement link may not carry a query string or fragment either; one that
+does is ignored and the manual steps are shown. The store links, once known,
+are offered in the fallback.
 
 The app refetches on return to foreground once cached data is older than 60 s
 (course detail 120 s); otherwise the student pulls to refresh.
 
-For a future mobile task: add `android.intentFilters` (`autoVerify`) and
-`ios.associatedDomains` for the portal's host, serve `/.well-known/assetlinks.json`
-and `apple-app-site-association` from this app, and invalidate course/library
-queries when the app is opened from the link.
+For a future mobile task (not needed for the above): `android.intentFilters`
+(`autoVerify`) and `ios.associatedDomains` for the portal's host, with
+`/.well-known/assetlinks.json` and `apple-app-site-association` served from
+this app, would allow an https link that also works when the app is not
+installed.
 
 ## Disabling the learning website later (not done)
 
