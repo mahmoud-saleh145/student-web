@@ -115,9 +115,9 @@ const en = {
   'act.success.partsIntro': 'Unlocked in “{course}”:',
   'act.success.sectionsIntro': 'Sections unlocked in “{course}”:',
   'act.success.teacherNote': 'This card may also cover other courses by {name}. See My activations.',
-  'act.success.nothingNewTitle': 'Nothing new was unlocked',
+  'act.success.nothingNewTitle': 'Your code was accepted',
   'act.success.nothingNewBody':
-    'The code was accepted, but your access to “{course}” did not change — you already had what it covers. If you think this is a mistake, contact the administration with your card.',
+    'What you can open in “{course}” is the same as before. If this card renews or extends your access, the new end date is now on your account. If you expected something else, contact the administration with your card.',
   'act.success.joined': 'You joined “{course}”.',
   'act.success.pendingTitle': 'Request sent',
   'act.success.pendingBody': 'Your request to join “{course}” was sent. You will get access when the administration approves it.',
@@ -142,6 +142,8 @@ const en = {
   'act.app.refresh': 'If you do not see it right away, pull down to refresh in My courses or the Library.',
   'act.app.notOpened':
     'The app did not open? Open Student Center from your phone’s home screen. What you activated is already on your account.',
+  'act.app.manual':
+    'Open Student Center from your phone’s home screen. What you activated is already on your account.',
   'act.app.onPhone':
     'Student Center is a phone app. Open it on your phone — what you activated is already on your account.',
   'act.app.getApp': 'Get the app',
@@ -293,9 +295,9 @@ const ar: Record<ActivationKey, string> = {
   'act.success.partsIntro': 'تم فتحه في «{course}»:',
   'act.success.sectionsIntro': 'الأقسام التي فُتحت في «{course}»:',
   'act.success.teacherNote': 'قد يشمل هذا الكرت كورسات أخرى للمحاضر {name}. راجع تفعيلاتي.',
-  'act.success.nothingNewTitle': 'لم يُفتح شيء جديد',
+  'act.success.nothingNewTitle': 'تم قبول الكود',
   'act.success.nothingNewBody':
-    'تم قبول الكود، لكن وصولك إلى «{course}» لم يتغير — كان لديك بالفعل ما يشمله. إذا رأيت أن هذا خطأ، تواصل مع الإدارة ومعك الكرت.',
+    'ما يمكنك فتحه في «{course}» لم يتغيّر. إذا كان هذا الكرت يجدّد أو يمدّ مدة وصولك، فقد سُجّل الموعد الجديد على حسابك. إذا كنت تتوقع شيئًا آخر، تواصل مع الإدارة ومعك الكرت.',
   'act.success.joined': 'انضممت إلى «{course}».',
   'act.success.pendingTitle': 'تم إرسال الطلب',
   'act.success.pendingBody': 'تم إرسال طلب انضمامك إلى «{course}». ستحصل على الوصول عند موافقة الإدارة.',
@@ -319,6 +321,7 @@ const ar: Record<ActivationKey, string> = {
   'act.app.body': 'افتح تطبيق Student Center على هاتفك. ما فعّلته موجود على حسابك بالفعل.',
   'act.app.refresh': 'إذا لم يظهر فورًا، اسحب الشاشة لأسفل للتحديث في كورساتي أو المكتبة.',
   'act.app.notOpened': 'لم يُفتح التطبيق؟ افتح Student Center من الشاشة الرئيسية لهاتفك. ما فعّلته موجود على حسابك بالفعل.',
+  'act.app.manual': 'افتح Student Center من الشاشة الرئيسية لهاتفك. ما فعّلته موجود على حسابك بالفعل.',
   'act.app.onPhone': 'Student Center تطبيق للهاتف. افتحه على هاتفك — ما فعّلته موجود على حسابك بالفعل.',
   'act.app.getApp': 'حمّل التطبيق',
 

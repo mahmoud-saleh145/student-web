@@ -176,7 +176,7 @@ export function CourseActivationCard({
         try {
           const fresh = await refreshOwnership();
           const summary = unlockSummary(before, buildSnapshot(fresh));
-          if (!summary.nothingNew) {
+          if (ownershipKnownFor(validation.targetType, fresh) && !summary.nothingNew) {
             setCode('');
             finish('unlocked', summary, validation);
             return;
@@ -184,6 +184,10 @@ export function CourseActivationCard({
         } catch {
           // Still no answer: say exactly that, below.
         }
+      } else {
+        // Nothing to compare with, but the panel should still show the
+        // server's current answer beside the message.
+        void refreshOwnership().catch(() => undefined);
       }
       setMessage({ text: t('act.err.unknownOutcome'), goTo: null });
       return;
@@ -194,8 +198,9 @@ export function CourseActivationCard({
     setCode('');
     try {
       const fresh = await refreshOwnership();
-      if (!beforeKnown) {
-        // Activated, but there is no trustworthy "before" to itemise against.
+      if (!beforeKnown || !ownershipKnownFor(validation.targetType, fresh)) {
+        // Activated, but one side of the comparison could not be loaded in
+        // full. A plain receipt is truthful; an itemised one would be a guess.
         finish('unverified', null, validation);
         return;
       }
@@ -221,8 +226,8 @@ export function CourseActivationCard({
     setMessage(null);
     setPhase('checking');
     try {
-      // Read-only: names the card's kind, and refuses an invalid, expired or
-      // used card with its own message before anything is attempted.
+      // Read-only: names the card's kind, and turns away an invalid, expired
+      // or used card with the backend's message before anything is attempted.
       const validation = await validate.mutateAsync(cardCode);
       // Ownership as the server sees it right now, not as this page last saw
       // it — the "before" the receipt is measured against.

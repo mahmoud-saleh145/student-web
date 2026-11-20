@@ -87,6 +87,7 @@ describe('portal dictionary', () => {
       'act.code.required',
       'act.code.format',
       'act.app.notOpened',
+      'act.app.manual',
       'act.app.onPhone',
       'act.err.goToWallet',
       'act.err.goToCourses',

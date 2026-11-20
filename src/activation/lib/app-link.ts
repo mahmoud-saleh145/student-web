@@ -26,8 +26,9 @@
  *
  * WHAT MAY TRAVEL IN THE LINK
  * ---------------------------
- * Nothing. The link carries no path, no query string and no fragment — not an
- * access code, not a token, not a student or course id. Entitlements live on
+ * Nothing. The built-in link is the bare scheme, with no path. No link — the
+ * built-in one or a replacement — may carry a query string or a fragment: not
+ * an access code, not a token, not a student or course id. Entitlements live on
  * the backend; the app re-reads them when it returns to the foreground. A link
  * that could carry data would be a place for a code or a credential to leak
  * into browser history, logs and other apps' intent handlers, so the parser
@@ -101,6 +102,24 @@ export function resolveAppOpenUrl(raw: string | null | undefined): string | null
 export function isPhoneOrTablet(userAgent: string, maxTouchPoints = 0): boolean {
   if (/android|iphone|ipad|ipod/i.test(userAgent)) return true;
   return /macintosh/i.test(userAgent) && maxTouchPoints > 1;
+}
+
+/**
+ * Is the page inside another app's embedded browser?
+ *
+ * An embedded browser (an Android WebView, or the in-app browser of a chat or
+ * social app) often does not hand an unknown scheme to the system: it loads it
+ * as a page and shows an error in place of the portal. A real browser never
+ * does that on a phone, so the scheme is attempted only there; in an embedded
+ * browser the card shows the manual steps instead.
+ *
+ * `; wv)` is how an Android WebView identifies itself. The names are the
+ * in-app browsers students are most likely to arrive from. A browser this
+ * misses still has the page's own fallback behind it.
+ */
+export function isEmbeddedBrowser(userAgent: string): boolean {
+  if (/;\s*wv\)/i.test(userAgent)) return true;
+  return /\b(FBAN|FBAV|FB_IAB|Instagram|Line\/|Snapchat|TikTok|musical_ly|Telegram|WhatsApp|MicroMessenger)\b/i.test(userAgent);
 }
 
 const STORE_HOSTS: Readonly<Record<'android' | 'ios', readonly string[]>> = {

@@ -133,7 +133,9 @@ receipt (`sessionStorage`, this tab only) is display text, never a code.
   this card unlocks. Your card was not used." There is no confirmation step in
   between: whether a card is worth redeeming is the backend's decision alone.
   (`/codes/validate` is still called first, read-only, so an invalid, expired
-  or used card gets its own message before anything is attempted.) A student
+  or used card is turned away with the backend's message before anything is
+  attempted.) A card the backend accepts without opening anything new is a
+  renewal of the access period, and the receipt says so plainly. A student
   who owns every part is offered no code box at all — the same rule as the
   learning website's join sheet.
 - "Full course" is shown only on the backend's `fullCourse.owned`. Owning every
@@ -169,6 +171,14 @@ How the button behaves:
 - **On a computer** no link is attempted (there is no app to open, and some
   desktop browsers replace the page with an error for an unknown scheme). The
   card says to open the app on the phone.
+- **Inside another app's embedded browser** (an Android WebView, or the in-app
+  browser of a chat or social app) no link is attempted either: those often
+  show an error page for a scheme they do not know. The card says to open
+  Student Center from the home screen.
+
+Known limits: a phone or tablet set to "desktop site" presents itself as a
+computer and gets the computer's message; an https replacement link, if one is
+ever configured, navigates this tab.
 
 Source and installed builds are not the same thing: that the configuration
 declares the scheme does not prove a given installed build answers it. The

@@ -33,8 +33,6 @@ export type AccessStateLike =
   | 'REVOKED'
   | 'ARCHIVED';
 
-export type CodeTargetLike = 'COURSE' | 'PART' | 'SECTION' | 'TEACHER';
-
 export interface PartLike {
   id: string;
   title: string;

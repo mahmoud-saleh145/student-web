@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   DEFAULT_APP_OPEN_URL,
   NO_APP_LINK,
+  isEmbeddedBrowser,
   isPhoneOrTablet,
   parseAppLinkConfig,
   resolveAppOpenUrl,
@@ -139,5 +140,31 @@ describe('isPhoneOrTablet — where the scheme is attempted at all', () => {
     }
     // A touch-screen Windows laptop is still a computer.
     assert.equal(isPhoneOrTablet('Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 10), false);
+  });
+});
+
+
+describe('isEmbeddedBrowser — where an unknown scheme can replace the page', () => {
+  it('recognises an Android WebView and the common in-app browsers', () => {
+    for (const ua of [
+      'Mozilla/5.0 (Linux; Android 14; Pixel 7 Build/UQ1A; wv) AppleWebKit/537.36 Version/4.0 Chrome/131.0 Mobile Safari/537.36',
+      'Mozilla/5.0 (Linux; Android 13; SM-A536B; wv) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/440.0]',
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 [FBAN/FBIOS;FBAV/440.0]',
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Instagram 310.0',
+      'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36 Telegram-Android/10.0',
+    ]) {
+      assert.equal(isEmbeddedBrowser(ua), true, ua);
+    }
+  });
+
+  it('leaves real browsers alone', () => {
+    for (const ua of [
+      'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+      'Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 SamsungBrowser/25.0 Chrome/121.0 Mobile Safari/537.36',
+      'Mozilla/5.0 (Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0',
+    ]) {
+      assert.equal(isEmbeddedBrowser(ua), false, ua);
+    }
   });
 });

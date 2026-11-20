@@ -271,7 +271,7 @@ test.describe('parts and sections', () => {
     await enterCourseCode(part1CardB);
 
     // No prompt: the card goes to the backend, and the backend refuses it.
-    await expect(page.getByTestId('code-confirm')).toHaveCount(0);
+    await expect(page.getByText('Check before you use this card')).toHaveCount(0);
     await expect(page.getByTestId('activation-error')).toContainText('You already have everything this card unlocks');
     await expect(page.getByTestId('activation-error')).toContainText('was not used');
     await expect(page).toHaveURL(new RegExp(`/activate/courses/${mechanics.id}$`));
