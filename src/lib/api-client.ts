@@ -91,13 +91,17 @@ interface RequestOptions {
   query?: Record<string, string | number | boolean | null | undefined>;
 }
 
+/** The learning website's proxy. The activation portal has its own. */
+const DEFAULT_PROXY_BASE = "/api/proxy";
+
 async function request<T>(
+  base: string,
   method: Method,
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
   const url = new URL(
-    `/api/proxy/${path.replace(/^\/+/, "")}`,
+    `${base}/${path.replace(/^\/+/, "")}`,
     window.location.origin,
   );
 
@@ -149,15 +153,35 @@ async function request<T>(
   return (hasEnvelope ? envelope.data : parsed) as T;
 }
 
-export const api = {
-  get: <T>(path: string, options?: RequestOptions) =>
-    request<T>("GET", path, options),
-  post: <T>(path: string, body?: unknown, options?: RequestOptions) =>
-    request<T>("POST", path, { ...options, body }),
-  put: <T>(path: string, body?: unknown, options?: RequestOptions) =>
-    request<T>("PUT", path, { ...options, body }),
-  patch: <T>(path: string, body?: unknown, options?: RequestOptions) =>
-    request<T>("PATCH", path, { ...options, body }),
-  delete: <T>(path: string, options?: RequestOptions) =>
-    request<T>("DELETE", path, options),
-};
+export interface ApiClient {
+  get: <T>(path: string, options?: RequestOptions) => Promise<T>;
+  post: <T>(path: string, body?: unknown, options?: RequestOptions) => Promise<T>;
+  put: <T>(path: string, body?: unknown, options?: RequestOptions) => Promise<T>;
+  patch: <T>(path: string, body?: unknown, options?: RequestOptions) => Promise<T>;
+  delete: <T>(path: string, options?: RequestOptions) => Promise<T>;
+}
+
+/**
+ * A client bound to one same-origin proxy.
+ *
+ * `api` below is the learning website's, on `/api/proxy`. The activation
+ * portal builds its own on `/api/activate/proxy`, which forwards only an
+ * allow-list of routes and carries a separate session — so the two share the
+ * request and error handling here without sharing a session or a route table.
+ */
+export function createApiClient(base: string): ApiClient {
+  return {
+    get: <T>(path: string, options?: RequestOptions) =>
+      request<T>(base, "GET", path, options),
+    post: <T>(path: string, body?: unknown, options?: RequestOptions) =>
+      request<T>(base, "POST", path, { ...options, body }),
+    put: <T>(path: string, body?: unknown, options?: RequestOptions) =>
+      request<T>(base, "PUT", path, { ...options, body }),
+    patch: <T>(path: string, body?: unknown, options?: RequestOptions) =>
+      request<T>(base, "PATCH", path, { ...options, body }),
+    delete: <T>(path: string, options?: RequestOptions) =>
+      request<T>(base, "DELETE", path, options),
+  };
+}
+
+export const api = createApiClient(DEFAULT_PROXY_BASE);

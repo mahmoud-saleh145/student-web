@@ -1,5 +1,6 @@
 'use client';
 
+import { isActivationPath } from '@/activation/lib/routes';
 import { ApiError } from '@/lib/api-client';
 import { endsSession } from '@/lib/error-messages';
 import { isPublicPage } from '@/lib/route-guard';
@@ -23,6 +24,10 @@ export function endSessionIfNeeded(error: unknown): void {
   if (!(error instanceof ApiError) || !endsSession(error)) return;
   if (ending || typeof window === 'undefined') return;
   if (isPublicPage(window.location.pathname)) return;
+  // The activation portal has its own session and its own sign-in page. This
+  // site's session ending is not that portal's business: it must neither sign
+  // the portal's visitor out nor carry them to `/login`.
+  if (isActivationPath(window.location.pathname)) return;
   ending = true;
 
   const reason = error.code === 'UNAUTHORIZED' ? 'SESSION_EXPIRED' : error.code;
