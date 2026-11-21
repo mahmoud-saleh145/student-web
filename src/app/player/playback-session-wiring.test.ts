@@ -94,7 +94,7 @@ describe('review fixes are wired', () => {
     assert.match(page, /window\.addEventListener\('pagehide', onPageHide\)/);
     assert.match(page, /const onPageHide = \(\) => session\.unload\(\);/);
     assert.match(page, /keepalive: true/);
-    assert.match(page, /event\.persisted && session\.isStopped/);
+    assert.match(page, /event\.persisted && session\.wasUnloaded/);
   });
 
   it('StrictMode re-runs reuse the live session for the same ticket instead of releasing it', () => {
@@ -117,5 +117,33 @@ describe('no secrets on screen or in logs', () => {
     const session = between(page, 'if (!sessionMode || !ticket) return;', '}, [sessionMode, ticket, tabId]);');
     assert.doesNotMatch(session, /console\./);
     assert.match(session, /onTerminate: \(reason\) => stopHere\(terminationErrorCode\(reason\), reason\)/);
+  });
+});
+
+describe('follow-up fixes are wired (M1, M2, L1)', () => {
+  it('M1: every release is broadcast to other tabs and re-asserts a newer session in this tab', () => {
+    assert.match(page, /onReleased: \(\) => \{\s*broadcastPlaybackReleased\(tabId\);/);
+    assert.match(page, /if \(current && current !== created\) current\.reclaimAfterPeerRelease\(\);/);
+  });
+
+  it('M1/L-2: a release in another tab makes the playing session re-claim (now + one bounded follow-up)', () => {
+    assert.match(page, /onPeerReleased: \(\) => \{\s*if \(sessionRef\.current === session\) session\.reclaimAfterPeerRelease\(\);/);
+  });
+
+  it('L-3: the tab lock marks a superseded session, so a bfcache restore never takes playback back', () => {
+    assert.match(page, /onSuperseded: \(\) => \{\s*if \(sessionRef\.current !== session\) return;\s*void session\.supersede\(\);/);
+    // The restore only restarts a session that handed back a LIVE ticket.
+    assert.match(page, /event\.persisted && session\.wasUnloaded && sessionRef\.current === session/);
+  });
+
+  it('M2: page visibility drives the embed idle release', () => {
+    assert.match(page, /document\.addEventListener\('visibilitychange', onVisibility\)/);
+    assert.match(page, /session\.onVisibilityChange\(document\.visibilityState === 'visible'\)/);
+    assert.match(page, /document\.removeEventListener\('visibilitychange', onVisibility\)/);
+  });
+
+  it('M2/L6: a bfcache restore only restarts a session that was unloaded', () => {
+    assert.match(page, /event\.persisted && session\.wasUnloaded && sessionRef\.current === session/);
+    assert.doesNotMatch(page, /event\.persisted && session\.isStopped/);
   });
 });

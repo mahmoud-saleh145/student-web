@@ -32,7 +32,18 @@
  *     server recorded but whose answer was lost is never credited twice.
  *   - A player left paused for `idleReleaseMs` gives its ticket back, so an
  *     open tab does not hold the student's single stream for hours. Pressing
- *     play again asks for a new ticket through the full request.
+ *     play again asks for a new ticket through the full request - and only
+ *     after its own release reached the server. The Gumlet embed (Safari),
+ *     whose pause state is unknowable, does the same after its tab has been
+ *     hidden for `embedHiddenReleaseMs` (30 min, a documented temporary
+ *     compromise - see `isIdle`), and resumes when the tab is shown again.
+ *   - The backend keys the single-stream slot by the browser session, so ANY
+ *     release removes it for every tab of this browser. After every release
+ *     (`onReleased`) the session that is still playing re-asserts the slot
+ *     with an immediate heartbeat, and every session sends one early
+ *     heartbeat after start, so a second device cannot slip through the gap.
+ *   - A heartbeat refused with a 4xx (a ticket unknown for the signed-in user)
+ *     ends playback without a silent re-issue.
  *   - It never logs or surfaces a ticket id, URL or token.
  *
  * This module is framework-free so it can be tested under `node --test`; the
@@ -79,6 +90,13 @@ export interface PlaybackSessionDeps<T extends SessionTicket> {
   release(ticketId: string): Promise<unknown>;
   /** Fire-and-forget release that survives the page unloading (keepalive). */
   releaseOnUnload?(ticketId: string): void;
+  /**
+   * Called after any ticket of this session was handed back. The backend keys
+   * the single-stream slot by the browser session, so a release removes it for
+   * EVERY tab of this browser; the page uses this to let the session that is
+   * still playing re-assert the slot at once (see `reassert`).
+   */
+  onReleased?(ticketId: string): void;
   /** A brand-new ticket through the full ticket request (every server check). */
   reissue(): Promise<T>;
   now(): number;
@@ -98,8 +116,17 @@ export interface PlaybackSessionOptions<T extends SessionTicket> {
   heartbeatTimeoutMs?: number;
   /** Minimum gap between two recovery re-issues. */
   reissueCooldownMs?: number;
-  /** Paused this long (media players only): give the ticket back. */
+  /** Media players: paused this long gives the ticket back (default 10 min). */
   idleReleaseMs?: number;
+  /**
+   * Gumlet embed (pause state unknowable): tab hidden this long gives the
+   * ticket back (default 30 min, a documented temporary compromise).
+   */
+  embedHiddenReleaseMs?: number;
+  /** One extra heartbeat this soon after start, re-asserting the slot. */
+  earlyReassertMs?: number;
+  /** Delay of the second re-claim after a peer release. */
+  reclaimFollowUpMs?: number;
   /** This many transient failures in a row end playback. */
   maxConsecutiveFailures?: number;
 }
@@ -123,6 +150,10 @@ export const MAX_WATCHED_DELTA_PER_BEAT = 60;
 export const MIN_HEARTBEAT_INTERVAL_SECONDS = 10;
 export const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
 export const DEFAULT_IDLE_RELEASE_MS = 10 * 60_000;
+/** Gumlet embed (Safari): tab hidden this long counts as idle. See `isIdle`. */
+export const DEFAULT_EMBED_HIDDEN_RELEASE_MS = 30 * 60_000;
+/** Second re-claim after a peer release (see `reclaimAfterPeerRelease`). */
+export const RECLAIM_FOLLOW_UP_MS = 2_000;
 export const DEFAULT_MAX_CONSECUTIVE_FAILURES = 10;
 
 class HeartbeatTimeout extends Error {}
@@ -155,6 +186,13 @@ export class PlaybackSession<T extends SessionTicket> {
   private released = false;
   private parked = false;
   private resuming = false;
+  private unloaded = false;
+  private superseded = false;
+  private reassertPending = false;
+  private earlyTimer: unknown = null;
+  private reclaimTimer: unknown = null;
+  private parkRelease: Promise<void> | null = null;
+  private hiddenSince: number | null;
   private lastReissueAt: number | null = null;
   private lastActiveAt: number;
   private lastKnownPosition: number;
@@ -168,6 +206,32 @@ export class PlaybackSession<T extends SessionTicket> {
     this.ticket = ticket;
     this.lastKnownPosition = Math.max(0, Math.floor(ticket.resumePositionSeconds ?? 0));
     this.lastActiveAt = deps.now();
+    this.hiddenSince = deps.isVisible() ? null : deps.now();
+  }
+
+  /**
+   * True only when `unload()` (tab closed, or page put into the back/forward
+   * cache) handed back a ticket that was LIVE. A revoked, refused, superseded,
+   * parked or already-stopped session is never marked, so a bfcache restore
+   * never silently restarts it.
+   */
+  get wasUnloaded(): boolean {
+    return this.unloaded;
+  }
+
+  /** True once another tab of this browser took over playback (tab lock). */
+  get wasSuperseded(): boolean {
+    return this.superseded;
+  }
+
+  /**
+   * Another tab of this browser started playing: stop here, hand the ticket
+   * back, and remember why - so a later back/forward restore of this page does
+   * not take playback back from the newer tab.
+   */
+  supersede(): Promise<void> {
+    this.superseded = true;
+    return this.stop();
   }
 
   /** Current ticket id - for the page's release-on-leave and controls only. */
@@ -195,6 +259,57 @@ export class PlaybackSession<T extends SessionTicket> {
       this.ticket.heartbeatIntervalSeconds || DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     );
     this.interval = this.deps.setInterval(() => void this.beat(), seconds * 1000);
+    // One early beat: if a release from a previous page of this browser (a
+    // reload's keepalive, a lesson change) reached the server after our ticket
+    // was issued, it removed our slot; this puts it back within seconds
+    // instead of a full heartbeat interval.
+    this.earlyTimer = this.deps.setTimeout(() => {
+      this.earlyTimer = null;
+      this.reassert();
+    }, this.opts.earlyReassertMs ?? 5_000);
+  }
+
+  /**
+   * Re-assert the single-stream slot now: another ticket of this browser was
+   * just released, which removed the shared slot server-side. One immediate
+   * heartbeat (or one right after the beat in flight) adds it back, so a
+   * second device cannot slip in through the gap.
+   */
+  reassert(): void {
+    if (this.stopped || this.parked || this.terminated || this.released) return;
+    if (this.inFlight) {
+      this.reassertPending = true;
+      return;
+    }
+    void this.beat();
+  }
+
+  /**
+   * Another ticket of this browser was released. Re-assert now AND once more
+   * `RECLAIM_FOLLOW_UP_MS` later: on `pagehide` the releasing tab announces the
+   * release while its keepalive DELETE may still be on the wire, so the first
+   * re-assert can reach the server before that DELETE removes the slot again.
+   * Bounded: at most one follow-up is pending at any time, however many
+   * releases arrive, and a stopped/parked session schedules nothing.
+   */
+  reclaimAfterPeerRelease(): void {
+    if (this.stopped || this.parked || this.terminated || this.released) return;
+    this.reassert();
+    if (this.reclaimTimer !== null) return;
+    this.reclaimTimer = this.deps.setTimeout(() => {
+      this.reclaimTimer = null;
+      this.reassert();
+    }, this.opts.reclaimFollowUpMs ?? RECLAIM_FOLLOW_UP_MS);
+  }
+
+  /** Page visibility; drives the embed's idle release (it cannot report pause). */
+  onVisibilityChange(visible: boolean): void {
+    if (!visible) {
+      if (this.hiddenSince === null) this.hiddenSince = this.deps.now();
+      return;
+    }
+    this.hiddenSince = null;
+    if (this.opts.kind === 'embed' && this.parked) void this.resume();
   }
 
   attachMedia(media: SessionMedia | null): void {
@@ -257,10 +372,24 @@ export class PlaybackSession<T extends SessionTicket> {
   }
 
   private isIdle(): boolean {
-    if (this.opts.kind !== 'media') return false; // the embed's state is unknowable
+    const limit = this.opts.idleReleaseMs ?? DEFAULT_IDLE_RELEASE_MS;
+    if (this.opts.kind === 'embed') {
+      // TEMPORARY COMPROMISE (documented): the page cannot see the Gumlet
+      // iframe's play/pause state, so a tab hidden this long is taken as "not
+      // watching". It is deliberately long (30 min): a student listening in a
+      // background tab or Picture-in-Picture keeps the slot for half an hour,
+      // after which a second device could start while the Safari audio goes
+      // on - accepted, because Gumlet's media is not bound to our ticket
+      // anyway. Gumlet documents a player.js postMessage API
+      // (`@gumlet/player.js`: play/pause/ended events) that could replace
+      // this with real pause detection, but its support for DRM/FairPlay
+      // embeds on Safari is undocumented and not yet verified.
+      const embedLimit = this.opts.embedHiddenReleaseMs ?? DEFAULT_EMBED_HIDDEN_RELEASE_MS;
+      return this.hiddenSince !== null && this.deps.now() - this.hiddenSince >= embedLimit;
+    }
     const media = this.media;
     if (media && !media.paused) return false;
-    return this.deps.now() - this.lastActiveAt >= (this.opts.idleReleaseMs ?? DEFAULT_IDLE_RELEASE_MS);
+    return this.deps.now() - this.lastActiveAt >= limit;
   }
 
   /** Resolves once no heartbeat is in flight (including one started meanwhile). */
@@ -288,8 +417,26 @@ export class PlaybackSession<T extends SessionTicket> {
     }
     this.inFlight = this.runBeat(options.final === true).finally(() => {
       this.inFlight = null;
+      if (this.reassertPending) {
+        this.reassertPending = false;
+        this.reassert();
+      }
     });
     return this.inFlight;
+  }
+
+  /** Every release goes through here, so the page always hears about it. */
+  private releaseTicket(ticketId: string): Promise<void> {
+    return this.deps
+      .release(ticketId)
+      .catch(() => undefined)
+      .then(() => {
+        try {
+          this.deps.onReleased?.(ticketId);
+        } catch {
+          /* a listener must never break the release */
+        }
+      });
   }
 
   private async runBeat(final: boolean): Promise<void> {
@@ -310,7 +457,12 @@ export class PlaybackSession<T extends SessionTicket> {
       const { kind, code } = classify(error);
       if (kind === 'not-sent') this.clock.restore(watchedDeltaSeconds);
       if (kind === 'refused') {
-        if (!this.stopped) await this.handleTermination(code ?? 'PLAYBACK_DENIED');
+        // A thrown 4xx is not the normal expiry answer (that arrives as a 200
+        // `terminate` and is recovered once). It means this ticket is unknown
+        // for the signed-in user - e.g. another tab signed in to a different
+        // account - so a silent re-issue could start playback on the wrong
+        // account. End playback; the student's retry asks again explicitly.
+        if (!this.stopped) this.terminate(code ?? 'PLAYBACK_DENIED');
         return;
       }
       this.failures += 1;
@@ -324,9 +476,9 @@ export class PlaybackSession<T extends SessionTicket> {
       // The page left during this beat. A rotation minted in the meantime
       // is given straight back rather than left to expire.
       if (reply?.ticket?.ticketId && reply.ticket.ticketId !== ticketId) {
-        void this.deps.release(reply.ticket.ticketId).catch(() => undefined);
+        void this.releaseTicket(reply.ticket.ticketId);
       }
-      if (final && !reply?.terminate && (watchedDeltaSeconds > 0 || positionSeconds > 0)) {
+      if (final && this.opts.kind === 'media' && !reply?.terminate && (watchedDeltaSeconds > 0 || positionSeconds > 0)) {
         await this.deps
           .progress({ lessonId: this.opts.lessonId, positionSeconds, watchedSeconds: watchedDeltaSeconds })
           .catch(() => undefined);
@@ -348,7 +500,9 @@ export class PlaybackSession<T extends SessionTicket> {
       this.opts.onTicket(reply.ticket);
     }
 
-    if (watchedDeltaSeconds > 0 || positionSeconds > 0) {
+    // The embed reports no watched time and only a stale position, so it posts
+    // no progress at all (it used to post a zero-second claim every beat).
+    if (this.opts.kind === 'media' && (watchedDeltaSeconds > 0 || positionSeconds > 0)) {
       // After the beat, so the server has already observed this watch time
       // when it decides how much of the progress claim to credit.
       const posting = this.deps
@@ -371,7 +525,7 @@ export class PlaybackSession<T extends SessionTicket> {
         const fresh = await this.deps.reissue();
         if (this.stopped) {
           // The page left while we were recovering: give the new grant back.
-          void this.deps.release(fresh.ticketId).catch(() => undefined);
+          void this.releaseTicket(fresh.ticketId);
           return;
         }
         this.ticket = fresh;
@@ -389,17 +543,24 @@ export class PlaybackSession<T extends SessionTicket> {
   /** Idle: stop beating and give the ticket back; play again resumes. */
   private async park(): Promise<void> {
     this.parked = true;
+    // A re-assert queued for the live ticket means nothing once it is released.
+    this.reassertPending = false;
     this.clearTimer();
-    await this.deps.release(this.ticket.ticketId).catch(() => undefined);
+    this.parkRelease = this.releaseTicket(this.ticket.ticketId);
+    await this.parkRelease;
   }
 
   private async resume(): Promise<void> {
     if (!this.parked || this.resuming || this.stopped) return;
     this.resuming = true;
     try {
+      // Our own release must reach the server BEFORE the new ticket is issued:
+      // the release removes the browser's slot, so landing after the issue
+      // would leave the resumed playback without one.
+      if (this.parkRelease) await this.parkRelease;
       const fresh = await this.deps.reissue();
       if (this.stopped) {
-        void this.deps.release(fresh.ticketId).catch(() => undefined);
+        void this.releaseTicket(fresh.ticketId);
         return;
       }
       this.ticket = fresh;
@@ -472,23 +633,54 @@ export class PlaybackSession<T extends SessionTicket> {
    * with a keepalive request so the stream slot is freed at once.
    */
   unload(): void {
-    if (this.released || this.parked || this.terminated) return;
+    // Nothing live to hand back, and nothing a restore should restart:
+    //   terminated / superseded - this session is over for good;
+    //   parked - its ticket is already back, and it stays parked (a restored
+    //            page resumes it through the normal play / visibility path).
+    if (this.terminated || this.superseded || this.parked || this.released) return;
+    if (this.stopped) {
+      // A stop() is still finishing (its final report in flight) and its own
+      // release would be cancelled by the unload: hand the ticket back now with
+      // keepalive. The session is over, so it is NOT marked for a restore.
+      this.released = true;
+      this.deps.releaseOnUnload?.(this.ticket.ticketId);
+      try {
+        this.deps.onReleased?.(this.ticket.ticketId);
+      } catch {
+        /* unloading: best effort */
+      }
+      return;
+    }
+    this.unloaded = true;
     this.stopped = true;
     this.clearTimer();
     this.released = true;
     this.deps.releaseOnUnload?.(this.ticket.ticketId);
+    try {
+      this.deps.onReleased?.(this.ticket.ticketId);
+    } catch {
+      /* unloading: best effort */
+    }
   }
 
   private async releaseOnce(): Promise<void> {
     if (this.released || this.parked || this.terminated) return;
     this.released = true;
-    await this.deps.release(this.ticket.ticketId).catch(() => undefined);
+    await this.releaseTicket(this.ticket.ticketId);
   }
 
   private clearTimer(): void {
     if (this.interval !== null) {
       this.deps.clearInterval(this.interval);
       this.interval = null;
+    }
+    if (this.earlyTimer !== null) {
+      this.deps.clearTimeout(this.earlyTimer);
+      this.earlyTimer = null;
+    }
+    if (this.reclaimTimer !== null) {
+      this.deps.clearTimeout(this.reclaimTimer);
+      this.reclaimTimer = null;
     }
   }
 

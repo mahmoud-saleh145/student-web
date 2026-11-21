@@ -16,7 +16,7 @@ import { isDrmPlaybackTicket } from '@/lib/drm-playback';
 import { gumletEmbedSrc, isRejectedDeliveryField, playbackTicketRequestBody } from '@/lib/gumlet-embed';
 import { PlaybackSession, type HeartbeatReply } from '@/lib/playback-session';
 import { readPlaybackSessionFlagEnv, resolvePlaybackSessionMode } from '@/lib/playback-session-flag';
-import { createPlaybackTabLock, openPlaybackChannel } from '@/lib/playback-tab-lock';
+import { broadcastPlaybackReleased, createPlaybackTabLock, openPlaybackChannel } from '@/lib/playback-tab-lock';
 import { terminationErrorCode } from '@/lib/playback-termination';
 import { WEB_REQUEST_HEADER } from '@/lib/web-request';
 import { qk } from '@/lib/query-keys';
@@ -308,6 +308,9 @@ function ProtectedPlayer({
     };
 
     let session: PlaybackSession<PlaybackTicket>;
+    // The session this effect created (if any), so its own release does not
+    // make it re-assert itself.
+    let created: PlaybackSession<PlaybackTicket> | null = null;
     const live = liveSessionRef.current;
     if (live && live.ticket === ticket && live.stopTimer !== null && !live.session.isStopped) {
       // StrictMode (dev) re-ran this effect for the same ticket: keep going.
@@ -338,6 +341,14 @@ function ProtectedPlayer({
               /* unloading: best effort */
             }
           },
+          // A release removes the browser's shared stream slot server-side:
+          // tell the other tabs, and let a newer session in THIS tab (lesson
+          // change) re-assert it at once.
+          onReleased: () => {
+            broadcastPlaybackReleased(tabId);
+            const current = sessionRef.current;
+            if (current && current !== created) current.reclaimAfterPeerRelease();
+          },
           reissue: () => requestPlaybackTicket(videoIdRef.current),
           now: () => performance.now(),
           isVisible: () => document.visibilityState === 'visible',
@@ -357,6 +368,7 @@ function ProtectedPlayer({
           onTerminate: (reason) => stopHere(terminationErrorCode(reason), reason),
         },
       );
+      created = session;
       liveSessionRef.current = { ticket, session, stopTimer: null };
       session.start();
     }
@@ -369,10 +381,17 @@ function ProtectedPlayer({
       tabId,
       onSuperseded: () => {
         if (sessionRef.current !== session) return;
-        void session.stop();
+        // Remembered as superseded, so a back/forward restore of this page does
+        // not take playback back from the newer tab.
+        void session.supersede();
         drmMediaRef.current?.pause();
         videoRef.current?.pause();
         stopHere('CONCURRENT_STREAM_LIMIT', 'Playing in another tab');
+      },
+      // Another tab released a ticket, which removed the shared slot: put it
+      // back now, and once more shortly after (bounded; see the session).
+      onPeerReleased: () => {
+        if (sessionRef.current === session) session.reclaimAfterPeerRelease();
       },
     });
     lock.claim();
@@ -382,16 +401,24 @@ function ProtectedPlayer({
     const onPageHide = () => session.unload();
     window.addEventListener('pagehide', onPageHide);
     // Restored from the back/forward cache after that release: start over with
-    // a fresh ticket rather than play on without a session.
+    // a fresh ticket rather than play on without a session. Only a session that
+    // handed back a LIVE ticket on pagehide is restarted (`wasUnloaded`). A
+    // revoked, refused or superseded session stays stopped with its message,
+    // and the student restarts it explicitly; a parked one stays parked and
+    // resumes through the normal play / visibility path.
     const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted && session.isStopped && sessionRef.current === session) void loadTicketRef.current();
+      if (event.persisted && session.wasUnloaded && sessionRef.current === session) void loadTicketRef.current();
     };
     window.addEventListener('pageshow', onPageShow);
+    // Visibility drives the Safari embed's idle release (its pause state is unknowable).
+    const onVisibility = () => session.onVisibilityChange(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       lock.close();
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('pageshow', onPageShow);
+      document.removeEventListener('visibilitychange', onVisibility);
       if (sessionRef.current === session) sessionRef.current = null;
       const current = liveSessionRef.current;
       if (current && current.session === session) {

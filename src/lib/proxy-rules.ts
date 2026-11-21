@@ -84,3 +84,25 @@ export function isPublicReadPath(method: string, pathStr: string): boolean {
   const normalized = pathStr.replace(/^\/+|\/+$/g, "");
   return PUBLIC_READ_PATHS.some((rx) => rx.test(normalized));
 }
+
+/**
+ * Upstream 401s that are NOT about the session.
+ *
+ * The backend answers 401 for exactly one non-authentication condition:
+ * `PLAYBACK_TICKET_EXPIRED` - a playback ticket that does not exist (any more)
+ * for this user, e.g. after another tab signed in to a different account, or a
+ * ticket row that was pruned. The proxy used to treat every 401 as an expired
+ * login: it refreshed the tokens, retried, got the same 401 and then CLEARED
+ * THE SESSION COOKIES - signing the student out because of one stale video
+ * ticket. These answers are relayed as 410 Gone instead: no refresh, no cookie
+ * change, and no client-side "session ended" handling (which treats any 401
+ * as fatal). Genuine authentication failures (`UNAUTHORIZED`,
+ * `SESSION_EXPIRED`, `INVALID_CREDENTIALS`) keep the existing behaviour.
+ */
+const RESOURCE_LEVEL_401_CODES: ReadonlySet<string> = new Set(["PLAYBACK_TICKET_EXPIRED"]);
+
+export const RESOURCE_LEVEL_401_RELAY_STATUS = 410;
+
+export function isResourceLevelUnauthorized(status: number, code: string | null | undefined): boolean {
+  return status === 401 && typeof code === "string" && RESOURCE_LEVEL_401_CODES.has(code);
+}

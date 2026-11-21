@@ -26,42 +26,44 @@ export interface PlaybackTabLock {
   close(): void;
 }
 
-interface ClaimMessage {
-  type: 'edu-playback-claim';
-  tabId: string;
-}
+type LockMessage = { type: 'edu-playback-claim' | 'edu-playback-released'; tabId: string };
 
-function isClaim(data: unknown): data is ClaimMessage {
-  return (
-    !!data &&
-    typeof data === 'object' &&
-    (data as { type?: unknown }).type === 'edu-playback-claim' &&
-    typeof (data as { tabId?: unknown }).tabId === 'string'
-  );
+function asLockMessage(data: unknown): LockMessage | null {
+  if (!data || typeof data !== 'object') return null;
+  const { type, tabId } = data as { type?: unknown; tabId?: unknown };
+  if (typeof tabId !== 'string') return null;
+  if (type !== 'edu-playback-claim' && type !== 'edu-playback-released') return null;
+  return { type, tabId };
 }
 
 export function createPlaybackTabLock(options: {
   channel: ChannelLike | null;
   tabId: string;
   onSuperseded: () => void;
+  onPeerReleased?: () => void;
 }): PlaybackTabLock {
-  const { channel, tabId, onSuperseded } = options;
+  const { channel, tabId, onSuperseded, onPeerReleased } = options;
   let closed = false;
   if (channel) {
     channel.onmessage = (event) => {
-      if (closed || !isClaim(event.data) || event.data.tabId === tabId) return;
-      onSuperseded();
+      const message = asLockMessage(event.data);
+      if (closed || !message || message.tabId === tabId) return;
+      if (message.type === 'edu-playback-claim') onSuperseded();
+      else onPeerReleased?.();
     };
   }
+  const post = (type: LockMessage['type']) => {
+    if (closed || !channel) return;
+    const message: LockMessage = { type, tabId };
+    try {
+      channel.postMessage(message);
+    } catch {
+      /* channel unavailable: the server limits still apply */
+    }
+  };
   return {
     claim() {
-      if (closed || !channel) return;
-      const message: ClaimMessage = { type: 'edu-playback-claim', tabId };
-      try {
-        channel.postMessage(message);
-      } catch {
-        /* channel unavailable: the server limits still apply */
-      }
+      post('edu-playback-claim');
     },
     close() {
       if (closed) return;
@@ -85,5 +87,34 @@ export function openPlaybackChannel(): ChannelLike | null {
     return new BroadcastChannel(PLAYBACK_CHANNEL_NAME) as unknown as ChannelLike;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Tell every other tab of this browser that this tab just handed a playback
+ * ticket back. The server's single-stream slot is shared by all tabs of the
+ * browser session, so that release removed it for the tab still playing; on
+ * this message that tab re-asserts it at once (`onPeerReleased`).
+ *
+ * One-shot on its own channel, because a release often happens while the
+ * sending player is being torn down and its lock is already closed - and on
+ * `pagehide`, where nothing asynchronous may be awaited.
+ */
+export function broadcastPlaybackReleased(
+  tabId: string,
+  open: () => ChannelLike | null = openPlaybackChannel,
+): void {
+  const channel = open();
+  if (!channel) return;
+  try {
+    channel.postMessage({ type: 'edu-playback-released', tabId });
+  } catch {
+    /* channel unavailable: the server limits still apply */
+  } finally {
+    try {
+      channel.close();
+    } catch {
+      /* already closed */
+    }
   }
 }
