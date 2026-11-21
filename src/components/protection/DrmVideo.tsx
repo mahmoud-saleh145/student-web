@@ -104,6 +104,16 @@ type Props = {
   onPause?: () => void;
   onTimeUpdate?: () => void;
   onEnded?: () => void;
+  /** Seek / stall boundaries, so the page's watch clock never credits them. */
+  onSeeking?: () => void;
+  onSeeked?: () => void;
+  onWaiting?: () => void;
+  /**
+   * The media element once the player is attached, and `null` when it is torn
+   * down. Lets the page's playback session read the position and pause on a
+   * server stop. Read through a ref: never an effect dependency.
+   */
+  onMediaElement?: (element: HTMLMediaElement | null) => void;
 };
 
 
@@ -119,6 +129,10 @@ export default function DrmVideo({
   onPause,
   onTimeUpdate,
   onEnded,
+  onSeeking,
+  onSeeked,
+  onWaiting,
+  onMediaElement,
 }: Props) {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const playerRef = React.useRef<shaka.Player | null>(null);
@@ -190,8 +204,30 @@ export default function DrmVideo({
 
   // Keep the latest callbacks reachable without making them effect dependencies,
   // which would tear down and rebuild the player on every parent render.
-  const cbs = React.useRef({ onTerminate, onError, onPlayback, onPause, onTimeUpdate, onEnded });
-  cbs.current = { onTerminate, onError, onPlayback, onPause, onTimeUpdate, onEnded };
+  const cbs = React.useRef({
+    onTerminate,
+    onError,
+    onPlayback,
+    onPause,
+    onTimeUpdate,
+    onEnded,
+    onSeeking,
+    onSeeked,
+    onWaiting,
+    onMediaElement,
+  });
+  cbs.current = {
+    onTerminate,
+    onError,
+    onPlayback,
+    onPause,
+    onTimeUpdate,
+    onEnded,
+    onSeeking,
+    onSeeked,
+    onWaiting,
+    onMediaElement,
+  };
 
   React.useEffect(() => {
     let disposed = false;
@@ -637,6 +673,10 @@ export default function DrmVideo({
       mediaElement?.addEventListener('play', () => cbs.current.onPlayback?.());
       mediaElement?.addEventListener('pause', () => cbs.current.onPause?.());
       mediaElement?.addEventListener('timeupdate', () => cbs.current.onTimeUpdate?.());
+      mediaElement?.addEventListener('seeking', () => cbs.current.onSeeking?.());
+      mediaElement?.addEventListener('seeked', () => cbs.current.onSeeked?.());
+      mediaElement?.addEventListener('waiting', () => cbs.current.onWaiting?.());
+      if (mediaElement && !disposed) cbs.current.onMediaElement?.(mediaElement);
     })().catch((e: unknown) => {
       if (disposed) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -646,6 +686,7 @@ export default function DrmVideo({
 
     return () => {
       disposed = true;
+      cbs.current.onMediaElement?.(null);
       // Stop the CDM and release the licence immediately on unmount/navigation.
       if (playerRef.current) {
         void playerRef.current.destroy().catch(() => undefined);
