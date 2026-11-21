@@ -31,8 +31,23 @@ const flush = async () => {
 };
 
 function world(
-  options: { kind?: 'media' | 'embed'; first?: Ticket; timeoutMs?: number; idleReleaseMs?: number; maxFailures?: number } = {},
+  options: {
+    kind?: 'media' | 'embed';
+    first?: Ticket;
+    timeoutMs?: number;
+    idleReleaseMs?: number;
+    embedHiddenReleaseMs?: number;
+    maxFailures?: number;
+    /** Off unless given, so the timing of the older tests is unchanged. */
+    earlyReassertMs?: number;
+    startHidden?: boolean;
+    /** Shared-slot model hooks (single-stream race tests). */
+    onHeartbeat?: () => void;
+    onReleased?: (id: string) => void;
+  } = {},
 ) {
+  const released: string[] = [];
+  let releaseImpl: (id: string) => Promise<void> = async () => undefined;
   let now = 0;
   let nextHandle = 1;
   const timers = new Map<number, { at: number; every: number | null; fn: () => void }>();
@@ -44,7 +59,7 @@ function world(
   const log: string[] = [];
   const unloadReleases: string[] = [];
   let reissues = 0;
-  let visible = true;
+  let visible = !options.startHidden;
 
   // Scripted server: each heartbeat takes the next scripted answer, or OK.
   const script: (() => Promise<Reply>)[] = [];
@@ -66,6 +81,7 @@ function world(
     {
       heartbeat: (id, body, signal) => {
         heartbeats.push({ id, body, signal });
+        options.onHeartbeat?.();
         log.push(`hb:${id}`);
         const next = script.shift();
         const answer = next ? next() : Promise.resolve<Reply>({ ok: true, terminate: null });
@@ -80,12 +96,20 @@ function world(
       release: async (id) => {
         releases.push(id);
         log.push(`release:${id}`);
+        await releaseImpl(id);
+        log.push(`release-done:${id}`);
       },
       releaseOnUnload: (id) => {
         unloadReleases.push(id);
       },
+      onReleased: (id) => {
+        released.push(id);
+        options.onReleased?.(id);
+        log.push(`released-note:${id}`);
+      },
       reissue: () => {
         reissues += 1;
+        log.push('reissue');
         return reissueImpl();
       },
       now: () => now,
@@ -108,7 +132,9 @@ function world(
       kind: options.kind ?? 'media',
       heartbeatTimeoutMs: options.timeoutMs ?? 15_000,
       ...(options.idleReleaseMs !== undefined ? { idleReleaseMs: options.idleReleaseMs } : {}),
+      ...(options.embedHiddenReleaseMs !== undefined ? { embedHiddenReleaseMs: options.embedHiddenReleaseMs } : {}),
       ...(options.maxFailures !== undefined ? { maxConsecutiveFailures: options.maxFailures } : {}),
+      earlyReassertMs: options.earlyReassertMs ?? 1e12,
       onTicket: (t) => tickets.push(t),
       onTerminate: (reason) => terminations.push(reason),
     },
@@ -166,6 +192,11 @@ function world(
     },
     setVisible(v: boolean) {
       visible = v;
+      session.onVisibilityChange(v);
+    },
+    released,
+    setRelease(fn: (id: string) => Promise<void>) {
+      releaseImpl = fn;
     },
     get activeTimers() {
       return timers.size;
@@ -497,16 +528,19 @@ describe('PlaybackSession - review fixes', () => {
     assert.equal(w.terminations.length, 0);
   });
 
-  it('a 4xx answer ends the session instead of retrying forever (expired row -> one recovery)', async () => {
+  it('a 4xx answer ends the session instead of retrying forever (no silent re-issue)', async () => {
     const w = world();
     w.session.attachMedia(w.media);
     w.session.start();
     w.play();
+    // What the proxy now relays for an unknown ticket: 410, never a 401.
     w.script.push(() =>
-      Promise.reject(Object.assign(new Error('gone'), { code: 'PLAYBACK_TICKET_EXPIRED', status: 401 })),
+      Promise.reject(Object.assign(new Error('gone'), { code: 'PLAYBACK_TICKET_EXPIRED', status: 410 })),
     );
     await w.advance(31_000);
-    assert.equal(w.reissues, 1, 'an expired ticket row is recovered once');
+    assert.equal(w.reissues, 0, 'a ticket unknown for this user is never silently replaced');
+    assert.deepEqual(w.terminations, ['PLAYBACK_TICKET_EXPIRED']);
+    assert.equal(w.media.paused, true);
     const w2 = world();
     w2.session.attachMedia(w2.media);
     w2.session.start();
@@ -584,8 +618,8 @@ describe('PlaybackSession - review fixes', () => {
     assert.deepEqual(w.releases, ['t1'], 'nothing left to release');
   });
 
-  it('the Gumlet embed is never parked (its pause state is unknowable)', async () => {
-    const w = world({ kind: 'embed', idleReleaseMs: 60_000 });
+  it('a VISIBLE Gumlet embed is never parked (its pause state is unknowable; see M2 for hidden tabs)', async () => {
+    const w = world({ kind: 'embed', embedHiddenReleaseMs: 60_000 });
     w.session.start();
     await w.advance(300_000);
     assert.equal(w.session.isParked, false);
@@ -606,5 +640,436 @@ describe('PlaybackSession - review fixes', () => {
     const beats = w.heartbeats.length;
     await w.advance(60_000);
     assert.equal(w.heartbeats.length, beats);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Follow-up fixes: M1 (single-stream race), M2 (Safari embed idle), L1 (401s)
+// ---------------------------------------------------------------------------
+
+/**
+ * The backend's single-stream slot, as it really behaves: ONE entry per
+ * browser session. Issue/heartbeat add it (ZADD), any release of any ticket of
+ * that browser removes it (ZREM). A second device may start while it is absent.
+ */
+function sharedSlot() {
+  const slot = { present: true, gaps: 0 };
+  return {
+    slot,
+    add: () => {
+      slot.present = true;
+    },
+    remove: () => {
+      slot.present = false;
+      slot.gaps += 1;
+    },
+  };
+}
+
+describe('M1 - single-stream slot is re-asserted after any release in this browser', () => {
+  it('another tab releasing removes the shared slot; the playing tab puts it back at once (not 30 s later)', async () => {
+    const s = sharedSlot();
+    // Tab B is playing; tab A is the one that gets stopped (superseded / navigated away).
+    const tabB = world({ onHeartbeat: s.add });
+    const tabA = world({
+      onHeartbeat: s.add,
+      // What the page does on onReleased: broadcast; tab B's lock handler calls reassert().
+      onReleased: () => tabB.session.reassert(),
+    });
+    tabA.setRelease(async () => s.remove());
+    tabB.session.attachMedia(tabB.media);
+    tabB.session.start();
+    tabB.play();
+    tabA.session.start();
+    await tabB.advance(5_000);
+    const beatsBefore = tabB.heartbeats.length;
+    await tabA.session.stop();
+    assert.equal(s.slot.gaps, 1, 'the release removed the shared slot');
+    await tabB.advance(250);
+    assert.equal(tabB.heartbeats.length, beatsBefore + 1, 'tab B re-asserted with an immediate heartbeat');
+    assert.equal(s.slot.present, true, 'slot restored within one round trip');
+  });
+
+  it('a re-assert during a beat in flight queues exactly one follow-up beat (no flood)', async () => {
+    const w = world({ timeoutMs: 60_000 });
+    w.session.start();
+    let answer: (r: Reply) => void = () => undefined;
+    w.script.push(() => new Promise<Reply>((r) => (answer = r)));
+    await w.advance(31_000);
+    assert.equal(w.heartbeats.length, 1);
+    w.session.reassert();
+    w.session.reassert();
+    w.session.reassert();
+    answer({ ok: true, terminate: null });
+    await w.advance(250);
+    assert.equal(w.heartbeats.length, 2, 'one queued follow-up, however many re-asserts arrived');
+  });
+
+  it('every session sends one early heartbeat after start (covers a reload whose keepalive release lands late)', async () => {
+    const w = world({ earlyReassertMs: 5_000 });
+    w.session.start();
+    await w.advance(5_500);
+    assert.equal(w.heartbeats.length, 1, 'early beat at ~5 s');
+    await w.advance(25_000);
+    assert.equal(w.heartbeats.length, 2, 'then the normal 30 s schedule');
+  });
+
+  it('resume never issues a new ticket before its own idle release reached the server', async () => {
+    const w = world({ idleReleaseMs: 60_000 });
+    w.session.attachMedia(w.media);
+    w.session.start();
+    let finishRelease: () => void = () => undefined;
+    w.setRelease(() => new Promise<void>((r) => (finishRelease = r)));
+    w.pause();
+    await w.advance(91_000); // parks at the 90 s beat; its release is still in flight
+    assert.equal(w.session.isParked, true);
+    w.play(); // student presses play while the release is pending
+    await w.advance(1_000);
+    assert.equal(w.reissues, 0, 'no ticket issued while our release is pending');
+    finishRelease();
+    await w.advance(500);
+    assert.equal(w.reissues, 1);
+    assert.ok(w.log.indexOf('release-done:t1') < w.log.indexOf('reissue'), w.log.join(' '));
+  });
+
+  it('every release path notifies the page (stop, park, rotation after leaving, unload)', async () => {
+    const stop = world();
+    stop.session.start();
+    await stop.session.stop();
+    assert.deepEqual(stop.released, ['t1']);
+
+    const park = world({ idleReleaseMs: 60_000 });
+    park.session.attachMedia(park.media);
+    park.session.start();
+    await park.advance(91_000);
+    assert.deepEqual(park.released, ['t1']);
+
+    const late = world({ timeoutMs: 60_000 });
+    late.session.start();
+    let answer: (r: Reply) => void = () => undefined;
+    late.script.push(() => new Promise<Reply>((r) => (answer = r)));
+    await late.advance(31_000);
+    const stopping = late.session.stop();
+    answer({ ok: true, terminate: null, ticket: ticket('t7') });
+    await stopping;
+    await late.advance(250);
+    assert.deepEqual([...late.released].sort(), ['t1', 't7']);
+
+    const unload = world();
+    unload.session.start();
+    unload.session.unload();
+    assert.deepEqual(unload.unloadReleases, ['t1']);
+    assert.deepEqual(unload.released, ['t1'], 'the page broadcasts on pagehide too');
+  });
+
+  it('a parked or stopped session never re-asserts (it holds no ticket)', async () => {
+    const w = world({ idleReleaseMs: 60_000 });
+    w.session.attachMedia(w.media);
+    w.session.start();
+    await w.advance(91_000);
+    const beats = w.heartbeats.length;
+    w.session.reassert();
+    await w.advance(250);
+    assert.equal(w.heartbeats.length, beats);
+    await w.session.stop();
+    w.session.reassert();
+    await w.advance(250);
+    assert.equal(w.heartbeats.length, beats);
+  });
+});
+
+describe('M2 - Safari (Gumlet embed) lifecycle', () => {
+  it('a hidden embed tab gives its ticket back after the idle period and stops beating', async () => {
+    const w = world({ kind: 'embed', embedHiddenReleaseMs: 600_000 });
+    w.session.start();
+    await w.advance(60_000);
+    w.setVisible(false);
+    await w.advance(631_000);
+    assert.equal(w.session.isParked, true);
+    assert.deepEqual(w.releases, ['t1']);
+    const beats = w.heartbeats.length;
+    await w.advance(600_000);
+    assert.equal(w.heartbeats.length, beats, 'no beats while parked: other devices can play');
+    assert.equal(w.terminations.length, 0, 'parking is silent');
+  });
+
+  it('showing the tab again resumes with a fresh ticket through the full request', async () => {
+    const w = world({ kind: 'embed', embedHiddenReleaseMs: 600_000 });
+    w.setReissue(async () => ticket('t-back'));
+    w.session.start();
+    w.setVisible(false);
+    await w.advance(631_000);
+    assert.equal(w.session.isParked, true);
+    w.setVisible(true);
+    await w.advance(31_000);
+    assert.equal(w.session.isParked, false);
+    assert.equal(w.reissues, 1);
+    assert.equal(w.heartbeats.at(-1)!.id, 't-back');
+  });
+
+  it('a visible embed is never released, and a short hide does not release it', async () => {
+    const w = world({ kind: 'embed', embedHiddenReleaseMs: 600_000 });
+    w.session.start();
+    await w.advance(1_800_000); // 30 min visible
+    w.setVisible(false);
+    await w.advance(300_000); // 5 min hidden
+    w.setVisible(true);
+    await w.advance(600_000);
+    assert.equal(w.session.isParked, false);
+    assert.deepEqual(w.releases, []);
+  });
+
+  it('an embed opened in a background tab counts as hidden from the start', async () => {
+    const w = world({ kind: 'embed', embedHiddenReleaseMs: 600_000, startHidden: true });
+    w.session.start();
+    await w.advance(631_000);
+    assert.equal(w.session.isParked, true);
+  });
+
+  it('the embed never posts progress (no zero-second claims)', async () => {
+    const w = world({ kind: 'embed', first: ticket('t1', { resumePositionSeconds: 300 }) });
+    w.session.start();
+    await w.advance(300_000);
+    assert.ok(w.heartbeats.length >= 9);
+    assert.equal(w.progress.length, 0);
+  });
+
+  it('pagehide hands the ticket back; only an UNLOADED session is restarted by a bfcache restore', async () => {
+    const w = world({ kind: 'embed' });
+    w.session.start();
+    w.session.unload();
+    assert.equal(w.session.wasUnloaded, true);
+    assert.deepEqual(w.unloadReleases, ['t1']);
+
+    const revoked = world({ kind: 'embed' });
+    revoked.session.start();
+    revoked.script.push(async () => ({ ok: false, terminate: { reason: 'Session revoked' } }));
+    await revoked.advance(31_000);
+    revoked.session.unload();
+    assert.equal(revoked.session.wasUnloaded, false, 'a revoked session is not restarted');
+    assert.deepEqual(revoked.unloadReleases, []);
+
+    const parked = world({ kind: 'embed', embedHiddenReleaseMs: 60_000, startHidden: true });
+    parked.session.start();
+    await parked.advance(91_000);
+    parked.session.unload();
+    assert.equal(parked.session.wasUnloaded, false, 'a parked session is not restarted by a restore');
+    assert.equal(parked.session.isParked, true, 'it stays parked and resumes through the normal path');
+    assert.deepEqual(parked.unloadReleases, [], 'nothing left to release');
+  });
+});
+
+describe('L1 - a ticket-level 401 never logs the student out', () => {
+  it('the relayed 410 PLAYBACK_TICKET_EXPIRED stops playback with that code and never re-issues', async () => {
+    const w = world();
+    w.session.attachMedia(w.media);
+    w.session.start();
+    w.play();
+    w.script.push(() => Promise.reject(Object.assign(new Error('x'), { code: 'PLAYBACK_TICKET_EXPIRED', status: 410 })));
+    await w.advance(31_000);
+    assert.deepEqual(w.terminations, ['PLAYBACK_TICKET_EXPIRED']);
+    assert.equal(w.reissues, 0);
+  });
+
+  it('the normal 200 expiry answer is still recovered once', async () => {
+    const w = world();
+    w.session.start();
+    w.script.push(async () => ({ ok: false, terminate: { reason: 'PLAYBACK_TICKET_EXPIRED' } }));
+    await w.advance(31_000);
+    assert.equal(w.reissues, 1);
+    assert.equal(w.terminations.length, 0);
+  });
+});
+
+describe('L-2 - bounded re-claim after a peer release (tab close race)', () => {
+  it('re-claims immediately and once more ~2 s later', async () => {
+    const w = world();
+    w.session.start();
+    await w.advance(1_000);
+    w.session.reclaimAfterPeerRelease();
+    await w.advance(250);
+    assert.equal(w.heartbeats.length, 1, 'immediate re-claim');
+    await w.advance(2_000);
+    assert.equal(w.heartbeats.length, 2, 'one follow-up ~2 s later');
+    await w.advance(20_000);
+    assert.equal(w.heartbeats.length, 2, 'nothing more until the regular schedule');
+  });
+
+  it('a late keepalive DELETE that lands after the first re-claim is repaired by the follow-up', async () => {
+    const slot = { present: true };
+    const tabB = world({ onHeartbeat: () => (slot.present = true) });
+    tabB.session.start();
+    await tabB.advance(1_000);
+    // Tab A closes: its broadcast arrives first, B re-claims at once...
+    tabB.session.reclaimAfterPeerRelease();
+    await tabB.advance(250);
+    assert.equal(slot.present, true);
+    // ...then A's keepalive DELETE reaches the server and removes the slot.
+    slot.present = false;
+    await tabB.advance(2_000);
+    assert.equal(slot.present, true, 'restored by the follow-up, not 30 s later');
+  });
+
+  it('is bounded: a burst of releases schedules at most one follow-up (no heartbeat loop)', async () => {
+    const w = world();
+    w.session.start();
+    for (let i = 0; i < 10; i += 1) w.session.reclaimAfterPeerRelease();
+    await w.advance(250);
+    const immediate = w.heartbeats.length;
+    assert.ok(immediate <= 2, `immediate beats ${immediate}`);
+    await w.advance(2_000);
+    assert.ok(w.heartbeats.length <= immediate + 1, `follow-ups ${w.heartbeats.length - immediate}`);
+    await w.advance(20_000);
+    assert.ok(w.heartbeats.length <= immediate + 2);
+  });
+
+  it('a parked, stopped or terminated session never re-claims, and stop cancels a pending follow-up', async () => {
+    const w = world();
+    w.session.start();
+    w.session.reclaimAfterPeerRelease();
+    await w.advance(250);
+    const beats = w.heartbeats.length;
+    await w.session.stop();
+    await w.advance(5_000);
+    assert.equal(w.heartbeats.length, beats + 0, 'the pending follow-up was cancelled by stop');
+    w.session.reclaimAfterPeerRelease();
+    await w.advance(5_000);
+    assert.equal(w.heartbeats.length, beats);
+  });
+});
+
+describe('L-3 - back/forward restore never restarts a superseded or revoked session', () => {
+  it('a superseded session releases its ticket, is marked superseded, and a later pagehide does not mark it for restore', async () => {
+    const w = world();
+    w.session.start();
+    await w.session.supersede();
+    assert.equal(w.session.wasSuperseded, true);
+    assert.deepEqual(w.releases, ['t1']);
+    w.session.unload();
+    assert.equal(w.session.wasUnloaded, false, 'no restart on restore');
+    assert.deepEqual(w.unloadReleases, [], 'no second release');
+  });
+
+  it('a revoked session is never marked for restore', async () => {
+    const w = world();
+    w.session.start();
+    w.script.push(async () => ({ ok: false, terminate: { reason: 'Session revoked' } }));
+    await w.advance(31_000);
+    w.session.unload();
+    assert.equal(w.session.wasUnloaded, false);
+  });
+
+  it('a live session closed by pagehide IS marked for restore (and its ticket handed back once)', () => {
+    const w = world();
+    w.session.start();
+    w.session.unload();
+    w.session.unload();
+    assert.equal(w.session.wasUnloaded, true);
+    assert.deepEqual(w.unloadReleases, ['t1']);
+  });
+
+  it('a parked media session survives pagehide and resumes on play after a restore', async () => {
+    const w = world({ idleReleaseMs: 60_000 });
+    w.session.attachMedia(w.media);
+    w.session.start();
+    w.setReissue(async () => ticket('t-after-restore'));
+    await w.advance(91_000);
+    assert.equal(w.session.isParked, true);
+    w.session.unload();
+    assert.equal(w.session.wasUnloaded, false);
+    w.play();
+    await w.advance(31_000);
+    assert.equal(w.reissues, 1, 'resumed through the normal path: one full ticket request');
+    assert.equal(w.heartbeats.at(-1)!.id, 't-after-restore');
+  });
+});
+
+describe('M-1 - Safari embed default hidden timeout (30 min, documented compromise)', () => {
+  it('defaults to 30 minutes hidden for the embed - not the 10-minute media pause limit', async () => {
+    const w = world({ kind: 'embed' });
+    w.session.start();
+    w.setVisible(false);
+    await w.advance(29 * 60_000);
+    assert.equal(w.session.isParked, false, 'still holding the slot at 29 min hidden');
+    await w.advance(2 * 60_000);
+    assert.equal(w.session.isParked, true, 'released after 30 min hidden');
+    assert.deepEqual(w.releases, ['t1']);
+  });
+
+  it('a paused media player still releases after 10 minutes (unchanged)', async () => {
+    const w = world();
+    w.session.attachMedia(w.media);
+    w.session.start();
+    await w.advance(11 * 60_000);
+    assert.equal(w.session.isParked, true);
+  });
+
+  it('returning after 30+ min hidden follows the normal rules: one full ticket request, no play counted by the client', async () => {
+    const w = world({ kind: 'embed' });
+    w.setReissue(async () => ticket('t-return'));
+    w.session.start();
+    w.setVisible(false);
+    await w.advance(31 * 60_000);
+    w.setVisible(true);
+    await w.advance(31_000);
+    assert.equal(w.reissues, 1, 'exactly one ticket request (the server decides same play vs new play)');
+    assert.ok(w.heartbeats.every((h) => h.body.watchedDeltaSeconds === 0), 'the embed never reports watched time, so it cannot push a play over the 30 s threshold');
+    assert.equal(w.progress.length, 0);
+  });
+
+  it('a revoked embed session is never resumed by showing the tab', async () => {
+    const w = world({ kind: 'embed' });
+    w.session.start();
+    w.script.push(async () => ({ ok: false, terminate: { reason: 'Session revoked' } }));
+    await w.advance(31_000);
+    assert.deepEqual(w.terminations, ['Session revoked']);
+    w.setVisible(false);
+    await w.advance(31 * 60_000);
+    w.setVisible(true);
+    await w.advance(31_000);
+    assert.equal(w.reissues, 0);
+  });
+});
+
+describe('final-review LOW fixes', () => {
+  it('closing the tab while a stop is still finishing still hands the ticket back (keepalive), once, without marking a restore', async () => {
+    const w = world({ timeoutMs: 60_000 });
+    w.session.attachMedia(w.media);
+    w.session.start();
+    w.play();
+    await w.advance(20_000);
+    // The final report of the stop hangs...
+    let answer: (r: Reply) => void = () => undefined;
+    w.script.push(() => new Promise<Reply>((r) => (answer = r)));
+    const stopping = w.session.stop();
+    await w.advance(500);
+    // ...and the tab is closed meanwhile.
+    w.session.unload();
+    assert.deepEqual(w.unloadReleases, ['t1'], 'keepalive release sent');
+    assert.equal(w.session.wasUnloaded, false, 'a stopped session is never restarted by a restore');
+    answer({ ok: true, terminate: null });
+    await stopping;
+    assert.deepEqual(w.releases, [], 'no second (normal) release after the keepalive one');
+  });
+
+  it('a re-assert queued while parking does not fire an extra beat after the next resume', async () => {
+    const w = world({ idleReleaseMs: 60_000 });
+    w.session.attachMedia(w.media);
+    w.session.start();
+    let finishRelease: () => void = () => undefined;
+    w.setRelease(() => new Promise<void>((r) => (finishRelease = r)));
+    w.pause();
+    await w.advance(91_000); // park in flight (its release pending)
+    w.session.reassert(); // queued during the park? must be dropped
+    finishRelease();
+    await w.advance(500);
+    w.setReissue(async () => ticket('t-r'));
+    w.setRelease(async () => undefined);
+    const before = w.heartbeats.length;
+    w.play();
+    await w.advance(1_000);
+    assert.equal(w.heartbeats.length, before, 'no spurious beat right after resume');
+    await w.advance(30_000);
+    assert.equal(w.heartbeats.length, before + 1, 'then the normal schedule');
   });
 });

@@ -55,7 +55,15 @@ async function signIn(context: BrowserContext, baseURL: string) {
 }
 
 /** Stand-in backend. `terminateOnBeat` makes that heartbeat answer with a stop. */
-async function serve(page: Page, options: { terminateOnBeat?: number; terminateReason?: string } = {}) {
+async function serve(
+  page: Page,
+  options: {
+    terminateOnBeat?: number;
+    terminateReason?: string;
+    /** Answer that heartbeat with an HTTP error, as the proxy would relay it. */
+    errorOnBeat?: { beat: number; status: number; code: string };
+  } = {},
+) {
   const calls: Call[] = [];
   let issued = 0;
   let beats = 0;
@@ -88,6 +96,14 @@ async function serve(page: Page, options: { terminateOnBeat?: number; terminateR
     const hb = /^playback\/tickets\/([^/]+)\/heartbeat$/.exec(path);
     if (hb) {
       beats += 1;
+      if (options.errorOnBeat?.beat === beats) {
+        const { status, code } = options.errorOnBeat;
+        return route.fulfill({
+          status,
+          contentType: 'application/json',
+          json: { success: false, error: { code, message: code }, code, message: code },
+        });
+      }
       if (options.terminateOnBeat === beats) {
         return ok({ ok: false, terminate: { reason: options.terminateReason ?? 'Session revoked' } });
       }
@@ -226,17 +242,56 @@ test(`a second tab stops the first in a ${EXPECT} build`, async ({ context, base
   test.skip(EXPECT !== 'session', 'the tab lock belongs to the session (flag ON)');
   await signIn(context, baseURL!);
   const first = await context.newPage();
-  await serve(first);
+  const firstCalls = await serve(first);
   await ensureWidevine(first);
   await first.goto(`/player/${VIDEO_ID}`);
   await startPlaying(first);
 
   const second = await context.newPage();
-  await serve(second);
+  const secondCalls = await serve(second);
   await second.goto(`/player/${VIDEO_ID}`);
   await startPlaying(second);
 
   await expect(first.getByText(/watching on another session/i)).toBeVisible({ timeout: 20_000 });
   await expect(first.locator('video')).toHaveCount(0);
   expect(await sameElement(second)).toBe('original-element');
+
+  // M1: the first tab's release removed the browser's shared stream slot on
+  // the server; the second tab must re-assert it straight away (a heartbeat
+  // right after the release), not at its next scheduled beat.
+  const isRelease = (c: Call) => c.method === 'DELETE' && /^playback\/tickets\//.test(c.path);
+  await expect.poll(() => firstCalls.some(isRelease), { timeout: 10_000 }).toBe(true);
+  const release = firstCalls.find(isRelease)!;
+  const isBeatAfter = (c: Call) => /heartbeat$/.test(c.path) && c.at >= release.at;
+  await expect.poll(() => secondCalls.some(isBeatAfter), { timeout: 10_000 }).toBe(true);
+  const reassert = secondCalls.find(isBeatAfter)!;
+  const secondIssued = secondCalls.find((c) => /\/ticket$/.test(c.path))!;
+  console.log(
+    `[e2e-measure] reassert heartbeat ${reassert.at - release.at} ms after the other tab's release ` +
+      `(${reassert.at - secondIssued.at} ms after this tab's ticket)`,
+  );
+  expect(reassert.at - release.at).toBeLessThan(1_500);
+  // And it is the release-triggered beat, not this tab's early beat (~5 s after start).
+  expect(reassert.at - secondIssued.at).toBeLessThan(4_500);
+});
+
+// Client-side handling of the proxy's 410 relay. The stand-in backend answers
+// the browser directly, so the proxy route itself is NOT exercised here; its
+// 401 -> 410 relay is covered by src/lib/proxy-401-relay.test.ts.
+test(`a ticket-level 410 ends playback without signing out (client side) in a ${EXPECT} build`, async ({ page, context, baseURL }) => {
+  test.skip(EXPECT !== 'session', 'heartbeats only run with the flag ON');
+  await signIn(context, baseURL!);
+  const calls = await serve(page, { errorOnBeat: { beat: 1, status: 410, code: 'PLAYBACK_TICKET_EXPIRED' } });
+  await ensureWidevine(page);
+  await page.goto(`/player/${VIDEO_ID}`);
+  await startPlaying(page);
+  await expect(page.getByText(/playback session expired/i)).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('video')).toHaveCount(0);
+  // Still signed in: no logout, no redirect to sign-in, session cookies intact.
+  expect(page.url()).toContain(`/player/${VIDEO_ID}`);
+  expect(calls.some((c) => c.path.startsWith('auth/logout'))).toBe(false);
+  const names = (await context.cookies()).map((c) => c.name);
+  expect(names).toEqual(expect.arrayContaining(['edu_at', 'edu_rt']));
+  // And no silent re-issue on a ticket the server does not know.
+  expect(calls.filter((c) => /\/ticket$/.test(c.path)).length).toBe(1);
 });

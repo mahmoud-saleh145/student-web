@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { asApiError, httpStatusFor } from '@/lib/errors';
 import { applyProxyCachePolicy } from '@/lib/proxy-cache';
-import { isBlockedPath, isPublicReadPath } from '@/lib/proxy-rules';
+import {
+  isBlockedPath,
+  isPublicReadPath,
+  isResourceLevelUnauthorized,
+  RESOURCE_LEVEL_401_RELAY_STATUS,
+} from '@/lib/proxy-rules';
 import {
   currentSessionGeneration,
   isDefinitiveRefreshRejection,
@@ -175,6 +180,12 @@ async function handleProxy(
       return jsonError(apiErr.status, apiErr.code, apiErr.message);
     }
 
+    // A 401 about a playback ticket, not about the session: relay it without
+    // refreshing and without touching the cookies (lib/proxy-rules.ts).
+    if (isResourceLevelUnauthorized(apiErr.status, apiErr.code)) {
+      return jsonError(RESOURCE_LEVEL_401_RELAY_STATUS, apiErr.code, apiErr.message);
+    }
+
     // --- refresh ------------------------------------------------------------
     const refreshToken = await getRefreshToken();
     if (!refreshToken) {
@@ -272,10 +283,17 @@ async function handleProxy(
       return response;
     } catch (retryErr) {
       const retryApiErr = asApiError(retryErr);
+      // The refresh worked, but the retried request answered a ticket-level
+      // 401: relay it as 410 and keep (persist) the freshly rotated session.
+      const resourceLevel = isResourceLevelUnauthorized(retryApiErr.status, retryApiErr.code);
 
-      const response = jsonError(retryApiErr.status, retryApiErr.code, retryApiErr.message);
+      const response = jsonError(
+        resourceLevel ? RESOURCE_LEVEL_401_RELAY_STATUS : retryApiErr.status,
+        retryApiErr.code,
+        retryApiErr.message,
+      );
 
-      if (retryApiErr.status === 401) {
+      if (retryApiErr.status === 401 && !resourceLevel) {
         // A brand-new access token was rejected straight away. The session is not
         // recoverable, and continuing to hold cookies would only produce the same
         // 401 on the next request.
