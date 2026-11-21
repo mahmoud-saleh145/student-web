@@ -14,8 +14,13 @@ import { formatTimecode } from '@/lib/format';
 import { detectPlaybackPlatform } from '@/lib/playback-platform';
 import { isDrmPlaybackTicket } from '@/lib/drm-playback';
 import { gumletEmbedSrc, isRejectedDeliveryField, playbackTicketRequestBody } from '@/lib/gumlet-embed';
+import { PlaybackSession, type HeartbeatReply } from '@/lib/playback-session';
+import { readPlaybackSessionFlagEnv, resolvePlaybackSessionMode } from '@/lib/playback-session-flag';
+import { createPlaybackTabLock, openPlaybackChannel } from '@/lib/playback-tab-lock';
+import { terminationErrorCode } from '@/lib/playback-termination';
+import { WEB_REQUEST_HEADER } from '@/lib/web-request';
 import { qk } from '@/lib/query-keys';
-import { useTranslation } from '@/lib/session-context';
+import { useSession, useTranslation } from '@/lib/session-context';
 import { usePlayerStore } from '@/store/stores';
 import type { PlaybackTicket } from '@/types/domain';
 
@@ -70,6 +75,38 @@ export default function PlayerPage() {
   );
 }
 
+/**
+ * One ticket request, exactly as the page has always made it. Shared by the
+ * first load and by the playback session's recovery, so a recovered ticket
+ * passes every server check a first ticket does.
+ */
+async function requestPlaybackTicket(videoId: string): Promise<PlaybackTicket> {
+  // `platform` must reflect the real device: the backend switches to
+  // FairPlay only for `ios`. Hardcoding 'web' handed Safari a Widevine
+  // licence URL, and Safari - on iOS and on macOS alike - implements
+  // FairPlay exclusively (lib/playback-platform.ts).
+  // TEMPORARY hotfix: Safari web (iPhone, iPad and Mac) also opts in to
+  // Gumlet's embed player (lib/gumlet-embed.ts); a backend that predates
+  // the field rejects it, and the request is then repeated without it.
+  const platform = detectPlaybackPlatform();
+  const body = playbackTicketRequestBody(platform);
+  const requestTicket = (payload: object) =>
+    api.post<PlaybackTicket>(`playback/videos/${videoId}/ticket`, payload);
+  return requestTicket(body).catch((e: unknown) => {
+    if (body.delivery && isRejectedDeliveryField(e)) return requestTicket({ platform });
+    throw e;
+  });
+}
+
+function newTabId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  } catch {
+    /* fall through */
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function ProtectedPlayer({
   videoId,
   lessonId,
@@ -99,6 +136,45 @@ function ProtectedPlayer({
   const frameRef = React.useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = React.useState(false);
   const queryClient = useQueryClient();
+
+  // Playback session rollout (lib/playback-session-flag.ts). OFF by default:
+  // with the flag unset every branch below behaves exactly as before.
+  const { user } = useSession();
+  const userId = user?.id ?? null;
+  const userRole = user?.role ?? null;
+  const computedSessionMode = React.useMemo(
+    () =>
+      resolvePlaybackSessionMode(
+        readPlaybackSessionFlagEnv(),
+        userId && userRole ? { id: userId, role: userRole } : null,
+      ) === 'session',
+    [userId, userRole],
+  );
+  // Latched once a ticket exists: a user record arriving or changing later must
+  // never switch a lesson that is already playing between the two paths.
+  const [latchedSessionMode, setLatchedSessionMode] = React.useState<boolean | null>(null);
+  React.useEffect(() => {
+    if (ticket && latchedSessionMode === null) setLatchedSessionMode(computedSessionMode);
+  }, [ticket, latchedSessionMode, computedSessionMode]);
+  const sessionMode = latchedSessionMode ?? computedSessionMode;
+  const sessionRef = React.useRef<PlaybackSession<PlaybackTicket> | null>(null);
+  // The live session and its pending stop, so React StrictMode's dev-only
+  // unmount/remount of the same ticket reuses the session instead of
+  // releasing the ticket and starting over.
+  const liveSessionRef = React.useRef<{
+    ticket: PlaybackTicket;
+    session: PlaybackSession<PlaybackTicket>;
+    stopTimer: number | null;
+  } | null>(null);
+  // The element <DrmVideo> plays into (it owns its own <video>).
+  const drmMediaRef = React.useRef<HTMLMediaElement | null>(null);
+  const tabId = React.useMemo(newTabId, []);
+  // Read when a session is created, never as effect dependencies: a lesson
+  // change starts a new session only once its own ticket has loaded.
+  const lessonIdRef = React.useRef(lessonId);
+  lessonIdRef.current = lessonId;
+  const videoIdRef = React.useRef(videoId);
+  videoIdRef.current = videoId;
 
   React.useEffect(() => {
     const onChange = () => setIsFullscreen(document.fullscreenElement === frameRef.current && frameRef.current !== null);
@@ -164,22 +240,8 @@ function ProtectedPlayer({
     setLoading(true);
     setError(null);
     try {
-      // `platform` must reflect the real device: the backend switches to
-      // FairPlay only for `ios`. Hardcoding 'web' handed Safari a Widevine
-      // licence URL, and Safari - on iOS and on macOS alike - implements
-      // FairPlay exclusively (lib/playback-platform.ts).
-      // TEMPORARY hotfix: Safari web (iPhone, iPad and Mac) also opts in to
-      // Gumlet's embed player (lib/gumlet-embed.ts); a backend that predates
-      // the field rejects it, and the request is then repeated without it.
-      const platform = detectPlaybackPlatform();
-      const body = playbackTicketRequestBody(platform);
-      const requestTicket = (payload: object) =>
-        api.post<PlaybackTicket>(`playback/videos/${videoId}/ticket`, payload);
       const [tk, al] = await Promise.all([
-        requestTicket(body).catch((e: unknown) => {
-          if (body.delivery && isRejectedDeliveryField(e)) return requestTicket({ platform });
-          throw e;
-        }),
+        requestPlaybackTicket(videoId),
         api.get<{ used: number; limit: number; remaining: number }>(`playback/videos/${videoId}/allowance`).catch(() => null),
       ]);
       ticketRef.current = tk;
@@ -195,6 +257,8 @@ function ProtectedPlayer({
   React.useEffect(() => {
     void loadTicket();
   }, [loadTicket]);
+  const loadTicketRef = React.useRef(loadTicket);
+  loadTicketRef.current = loadTicket;
 
   React.useEffect(() => {
     const video = videoRef.current;
@@ -231,8 +295,120 @@ function ProtectedPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticket]);
 
+  // --- playback session (flag ON) -------------------------------------------
+  // Heartbeats, renewal, revocation, watch time and progress for EVERY player
+  // type (DRM, embed, legacy <video>). Keyed on the ticket from `loadTicket`
+  // only: a renewal or recovery replaces `ticketRef`, never the `ticket` state,
+  // so the player is never remounted and never asks for a new licence.
   React.useEffect(() => {
-    if (!ticket) return;
+    if (!sessionMode || !ticket) return;
+    const kind = gumletEmbedSrc(ticket) ? 'embed' : 'media';
+    const stopHere = (code: ApiError['code'], message: string) => {
+      setError(new ApiError({ code, status: 403, message }));
+    };
+
+    let session: PlaybackSession<PlaybackTicket>;
+    const live = liveSessionRef.current;
+    if (live && live.ticket === ticket && live.stopTimer !== null && !live.session.isStopped) {
+      // StrictMode (dev) re-ran this effect for the same ticket: keep going.
+      window.clearTimeout(live.stopTimer);
+      live.stopTimer = null;
+      session = live.session;
+    } else {
+      if (live && live.stopTimer !== null) {
+        window.clearTimeout(live.stopTimer);
+        void live.session.stop();
+      }
+      session = new PlaybackSession<PlaybackTicket>(
+        ticket,
+        {
+          heartbeat: (id, body, signal) =>
+            api.post<HeartbeatReply<PlaybackTicket>>(`playback/tickets/${id}/heartbeat`, body, { signal }),
+          progress: (body) => api.post('progress', body),
+          release: (id) => api.delete(`playback/tickets/${id}`),
+          releaseOnUnload: (id) => {
+            try {
+              void fetch(`/api/proxy/playback/tickets/${encodeURIComponent(id)}`, {
+                method: 'DELETE',
+                keepalive: true,
+                credentials: 'same-origin',
+                headers: { accept: 'application/json', [WEB_REQUEST_HEADER]: '1' },
+              }).catch(() => undefined);
+            } catch {
+              /* unloading: best effort */
+            }
+          },
+          reissue: () => requestPlaybackTicket(videoIdRef.current),
+          now: () => performance.now(),
+          isVisible: () => document.visibilityState === 'visible',
+          setInterval: (fn, ms) => window.setInterval(fn, ms),
+          clearInterval: (handle) => window.clearInterval(handle as number),
+          setTimeout: (fn, ms) => window.setTimeout(fn, ms),
+          clearTimeout: (handle) => window.clearTimeout(handle as number),
+        },
+        {
+          lessonId: lessonIdRef.current,
+          kind,
+          // Renewal: the session reports with the new ticket; the player keeps
+          // its media and licence. Deliberately NOT setTicket.
+          onTicket: (next) => {
+            ticketRef.current = next;
+          },
+          onTerminate: (reason) => stopHere(terminationErrorCode(reason), reason),
+        },
+      );
+      liveSessionRef.current = { ticket, session, stopTimer: null };
+      session.start();
+    }
+    sessionRef.current = session;
+    session.attachMedia(kind === 'media' ? (drmMediaRef.current ?? videoRef.current) : null);
+
+    // Last tab wins: another tab of this browser starting a lesson stops this one.
+    const lock = createPlaybackTabLock({
+      channel: openPlaybackChannel(),
+      tabId,
+      onSuperseded: () => {
+        if (sessionRef.current !== session) return;
+        void session.stop();
+        drmMediaRef.current?.pause();
+        videoRef.current?.pause();
+        stopHere('CONCURRENT_STREAM_LIMIT', 'Playing in another tab');
+      },
+    });
+    lock.claim();
+
+    // Closing the tab or reloading: React cleanup does not run, so hand the
+    // ticket back with a keepalive request.
+    const onPageHide = () => session.unload();
+    window.addEventListener('pagehide', onPageHide);
+    // Restored from the back/forward cache after that release: start over with
+    // a fresh ticket rather than play on without a session.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted && session.isStopped && sessionRef.current === session) void loadTicketRef.current();
+    };
+    window.addEventListener('pageshow', onPageShow);
+
+    return () => {
+      lock.close();
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+      if (sessionRef.current === session) sessionRef.current = null;
+      const current = liveSessionRef.current;
+      if (current && current.session === session) {
+        // Deferred by a tick so a StrictMode re-run can take the session back.
+        current.stopTimer = window.setTimeout(() => {
+          if (liveSessionRef.current?.session === session) liveSessionRef.current = null;
+          void session.stop();
+        }, 0);
+      } else {
+        void session.stop();
+      }
+    };
+  }, [sessionMode, ticket, tabId]);
+
+  // --- legacy heartbeat (flag OFF): unchanged ---------------------------------
+  React.useEffect(() => {
+    if (!ticket || sessionMode) return;
     const id = ticket.ticketId;
     const interval = setInterval(() => {
       const video = videoRef.current;
@@ -272,9 +448,12 @@ function ProtectedPlayer({
       }
     }, Math.max(10, ticket.heartbeatIntervalSeconds || 30) * 1000);
     return () => clearInterval(interval);
-  }, [ticket, lessonId]);
+  }, [ticket, lessonId, sessionMode]);
 
+  // Legacy release-on-leave (flag OFF). With the flag ON the session's stop()
+  // does this, after one last report.
   React.useEffect(() => {
+    if (sessionMode) return;
     const video = videoRef.current;
     return () => {
       const id = ticketRef.current?.ticketId;
@@ -288,7 +467,7 @@ function ProtectedPlayer({
         }
       }
     };
-  }, [lessonId]);
+  }, [lessonId, sessionMode]);
 
   React.useEffect(() => {
     const onCopy = (e: ClipboardEvent) => e.preventDefault();
@@ -382,7 +561,28 @@ function ProtectedPlayer({
               captions={ticket.captions}
               captionsEnabled={captionsEnabled}
               watermark={ticket.watermark}
+              {...(sessionMode
+                ? {
+                    onMediaElement: (element: HTMLMediaElement | null) => {
+                      drmMediaRef.current = element;
+                      sessionRef.current?.attachMedia(element);
+                    },
+                    onPlayback: () => sessionRef.current?.onPlaying(),
+                    onPause: () => sessionRef.current?.onPause(),
+                    onTimeUpdate: () => sessionRef.current?.onTimeUpdate(),
+                    onSeeking: () => sessionRef.current?.onSeeking(),
+                    onSeeked: () => sessionRef.current?.onSeeked(),
+                    onWaiting: () => sessionRef.current?.onWaiting(),
+                  }
+                : {})}
               onEnded={() => {
+                if (sessionMode) {
+                  // The real end position and the last watched seconds, through
+                  // one final beat so the server observes them before progress.
+                  void sessionRef.current?.ended();
+                  onEnded();
+                  return;
+                }
                 const watchedDeltaSeconds = Math.min(60, Math.round(watchedAccumulatorRef.current));
                 watchedAccumulatorRef.current = 0;
                 if (watchedDeltaSeconds > 0) {
@@ -415,12 +615,18 @@ function ProtectedPlayer({
                 disableRemotePlayback
                 onContextMenu={(e) => e.preventDefault()}
                 className="aspect-video w-full select-none rounded-lg bg-black"
-                onPlay={handlePlay}
-                onPause={handlePause}
-                onSeeking={handleSeeking}
-                onSeeked={handleSeeked}
-                onTimeUpdate={handleTimeUpdate}
+                onPlay={sessionMode ? () => sessionRef.current?.onPlaying() : handlePlay}
+                onPause={sessionMode ? () => sessionRef.current?.onPause() : handlePause}
+                onSeeking={sessionMode ? () => sessionRef.current?.onSeeking() : handleSeeking}
+                onSeeked={sessionMode ? () => sessionRef.current?.onSeeked() : handleSeeked}
+                onTimeUpdate={sessionMode ? () => sessionRef.current?.onTimeUpdate() : handleTimeUpdate}
+                onWaiting={sessionMode ? () => sessionRef.current?.onWaiting() : undefined}
                 onEnded={() => {
+                  if (sessionMode) {
+                    void sessionRef.current?.ended();
+                    onEnded();
+                    return;
+                  }
                   const video = videoRef.current;
                   if (video) {
                     const positionSeconds = Math.floor(video.currentTime);
@@ -460,14 +666,14 @@ function ProtectedPlayer({
         <div className="mx-auto flex max-w-5xl items-center justify-center gap-4 px-4 pt-3 text-xs text-white/70">
           <button
             className="cursor-pointer underline"
-            onClick={() => { const v = videoRef.current; if (v) v.currentTime = Math.max(0, v.currentTime - 10); }}
+            onClick={() => { const v = sessionMode ? (drmMediaRef.current ?? videoRef.current) : videoRef.current; if (v) v.currentTime = Math.max(0, v.currentTime - 10); }}
           >
             -10s
           </button>
           <span>{formatTimecode(resumeFrom)} →</span>
           <button
             className="cursor-pointer underline"
-            onClick={() => { const v = videoRef.current; if (v) v.currentTime += 10; }}
+            onClick={() => { const v = sessionMode ? (drmMediaRef.current ?? videoRef.current) : videoRef.current; if (v) v.currentTime += 10; }}
           >
             +10s
           </button>
